@@ -31,7 +31,7 @@ this script is a helper tool for vps (mainly debian) to quickly view the system 
 to install, download the raw script and run it with bash:
 
 ```bash
-curl -sSfL --tlsv1.3 --http2 --proto '=https' "https://raw.githubusercontent.com/m0nokey/vps-inspector/main/vps-inspector.sh" | bash -s
+curl -sSfL --tlsv1.3 --http2 --proto '=https' "https://raw.githubusercontent.com/m0nokey/vps-inspector/main/vps-inspector.sh" | bash -s -- -s
 ```
 
 **example full snapshot output:**
