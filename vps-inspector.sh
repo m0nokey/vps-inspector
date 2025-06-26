@@ -417,17 +417,17 @@ snapshot() {
         fi
     } | indent
 
-    echo -e "\n# package install/upgrade history"
+    echo -e "\n# Package install/upgrade history"
     {
         printf "%-10s %-8s %-8s %-15s %-5s %-12s %-12s %s\n" \
-            "date" "time" "action" "package" "arch" "old_version" "new_version" "status"
-
+            "DATE" "TIME" "ACTION" "PACKAGE" "ARCH" "OLD_VERSION" "NEW_VERSION" "STATUS"
+    
         grep -hE ' install | upgrade ' /var/log/dpkg.log* 2>/dev/null \
           | awk '{
                 n = split($4,a,":");
                 pkg  = a[1];
                 arch = a[2];
-                printf "%s %s %s %s %s %s\n", $1, $2, $3, pkg, arch, $5, $6
+                printf "%s %s %s %s %s %s %s\n", $1, $2, $3, pkg, arch, $5, $6
             }' \
           | sort -k1,1 -k2,2 \
           | while read DATE TIME ACTION PACKAGE ARCH OLD_REV NEW_REV; do
