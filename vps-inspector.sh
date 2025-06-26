@@ -12,7 +12,7 @@ TARGET=""; PKGFILES=(); FILE_PATH=""
 declare -a SIZES=()
 COMMON_PATHS=(/var/log /home /tmp)
 
-# colors & counters
+# olors & counters
 RESET=$'\e[0m'; DIR_COL=$'\e[1;34m'; LINK_COL=$'\e[1;36m'
 EXEC_COL=$'\e[1;32m'; ARCH_COL=$'\e[1;31m'; ORANGE=$'\e[38;5;214m'
 COUNT_DIRS=0; COUNT_FILES=0
@@ -28,46 +28,46 @@ usage() {
     Usage: $0 [options] [path|package|file]
 
     Options:
-      -a               show hidden files
-      -d               show directories only
-      -L depth         set recursion depth (default unlimited)
-      -P include_regex include only paths matching regex
-      -I exclude_regex exclude paths matching regex
-      -f               print full paths instead of names
-      -F               append indicators: '/' for dirs, '*' for executables, '@' for links, '#' for archives
-      -p               show permissions before name
-      -u               show owner before name
-      -g               show group before name
-      --dirsfirst      list directories before files
+      -a               Show hidden files
+      -d               Show directories only
+      -L depth         Set recursion depth (default unlimited)
+      -P include_regex Include only paths matching regex
+      -I exclude_regex Exclude paths matching regex
+      -f               Print full paths instead of names
+      -F               Append indicators: '/' for dirs, '*' for executables, '@' for links, '#' for archives
+      -p               Show permissions before name
+      -u               Show owner before name
+      -g               Show group before name
+      --dirsfirst      List directories before files
 
-      -t N, --top N    show top N largest files in /var/log,/home,/tmp
-      -r, --dfreport   show df -h and df -i for target
-      -s, --snapshot   quick system snapshot
-      -h, --help       show this help and exit
+      -t N, --top N    Show top N largest files in /var/log,/home,/tmp
+      -r, --dfreport   Show df -h and df -i for target
+      -s, --snapshot   Quick system snapshot
+      -h, --help       Show this help and exit
 
     Examples:
-      # list all files (including hidden)
+      # List all files (including hidden)
       $0 -a
 
-      # list directories only up to depth 2 in /etc
+      # List directories only up to depth 2 in /etc
       $0 -d -L 2 /etc
 
-      # show only .conf files in current dir
+      # Show only .conf files in current dir
       $0 -P '\.conf$'
 
-      # exclude any path containing /bin
+      # Exclude any path containing /bin
       $0 -I '/bin'
 
-      # print full paths and classify entries
+      # Print full paths and classify entries
       $0 -f -F
 
-      # after tree, show top 5 largest entries
+      # After tree, show top 5 largest entries
       $0 -t 5
 
-      # report disk usage and inodes for /var
+      # Report disk usage and inodes for /var
       $0 -r /var
 
-      # perform a quick system snapshot
+      # Perform a quick system snapshot
       $0 -s
 EOF
     exit 1
@@ -165,34 +165,35 @@ parse_tree() {
 
 # quick system snapshot
 snapshot() {
-    echo -e "# system snapshot"
+    echo -e "# System snapshot"
     {
         if [[ -r /etc/os-release ]]; then
             . /etc/os-release
-            echo "os: $PRETTY_NAME"
+            echo "OS: $PRETTY_NAME"
         else
-            echo "os: unknown"
+            echo "OS: unknown"
         fi
     
-        # determine server type: dedicated, container or vm
-        if command -v systemd-detect-virt &>/dev/null; then
-            vt=$(systemd-detect-virt)
-            case "$vt" in
-                none)
-                    echo "server type: dedicated server" ;;
-                lxc|docker|openvz|podman|systemd-nspawn)
-                    echo "server type: container ($vt)" ;;
-                *)
-                    echo "server type: virtual machine ($vt)" ;;
-            esac
-        fi
+            # determine server type: dedicated, container or VM
+            if command -v systemd-detect-virt &>/dev/null; then
+                vt=$(systemd-detect-virt)
+                case "$vt" in
+                    none)
+                        echo "Server type: Dedicated server" ;;
+                    lxc|docker|openvz|podman|systemd-nspawn)
+                        echo "Server type: Container ($vt)" ;;
+                    *)
+                        echo "Server type: Virtual machine ($vt)" ;;
+                esac
+            fi
     
-        echo "cpu cores: $(nproc)"
-        read _ TOTAL_MEM USED_MEM _ < <(free -h | awk '/^Mem:/')
-        echo "memory: $USED_MEM/$TOTAL_MEM"
+            echo "CPU cores: $(nproc)"
+            read _ TOTAL_MEM USED_MEM _ < <(free -h | awk '/^Mem:/')
+            echo "Memory: $USED_MEM/$TOTAL_MEM"
     } | indent
 
-    echo -e "\n# users & home directory trees"
+    # Users & Home directory trees
+    echo -e "\n# Users & Home directory trees"
     {
         # gather all real users (uid ≥1000)
         mapfile -t USER_HOMES < <(
@@ -209,76 +210,76 @@ snapshot() {
             U_NAME=${UH%%:*}
             U_HOME=${UH#*:}
     
-            echo -e "${DIR_COL}user: $U_NAME${RESET}"
+            echo -e "${DIR_COL}User: $U_NAME${RESET}"
             if [[ -d "$U_HOME" ]]; then
                 SHOW_HIDDEN=1 print_tree "$U_HOME" 1 ""
             else
-                echo -e "    ${ORANGE}(no home directory)${RESET}"
+                echo -e "    ${ORANGE}(No home directory)${RESET}"
             fi
             echo
         done
     } | indent
     
     # cron jobs
-    echo -e "\n# cron jobs"
+    echo -e "\n# Cron jobs"
     {
-        echo "system crontab (/etc/crontab & /etc/cron.d)"
+        echo "SYSTEM CRONTAB (/etc/crontab & /etc/cron.d)"
         grep -Ev '^\s*#' /etc/crontab 2>/dev/null
     
         for CRON_FILE in /etc/cron.d/*; do
             [[ -f $CRON_FILE ]] || continue
             echo
-            echo "file: $(basename "$CRON_FILE")"
+            echo "File: $(basename "$CRON_FILE")"
             grep -Ev '^\s*#' "$CRON_FILE" 2>/dev/null
         done
     
         echo
-        echo "user crontabs"
+        echo "USER CRONTABS"
         awk -F: '$3>=1000 && $7 !~ /(nologin|false)$/ {print $1}' /etc/passwd \
         | while read -r C_USER; do
             echo
-            echo "user: $C_USER"
+            echo "User: $C_USER"
             crontab -l -u "$C_USER" 2>/dev/null || echo "(none)"
         done
     } | indent
     
     # custom system services
-    echo -e "\n# custom system services"
+    echo -e "\n# Custom system services"
     {
         find /etc/systemd/system -maxdepth 1 -type f -name '*.service' \
             | xargs -r basename
     } | indent
     
     # user-defined systemd services
-    echo -e "\n# user-defined systemd services"
+    echo -e "\n# User-defined systemd services"
     {
         awk -F: '$3>=1000 && $7 !~ /(nologin|false)$/ {print $1}' /etc/passwd \
         | while read -r S_USER; do
-            echo "user: $S_USER"
+            echo "User: $S_USER"
             su - "$S_USER" -c 'systemctl --user list-unit-files --type=service --no-pager' 2>/dev/null \
                 || echo "(none)"
             echo
         done
     } | indent
 
-    echo -e "\n# top 10 by %mem"
+    echo -e "\n# Top 10 by %MEM"
     {
         ps aux --sort=-%mem | head -n 11
     } | indent
 
-    echo -e "\n# block devices"
+    echo -e "\n# Block devices"
     {
         lsblk -d -o NAME,SIZE,TYPE,MODEL
     } | indent
 
-    echo -e "\n# filesystems & partitions"
+    echo -e "\n# Filesystems & partitions"
     {
         lsblk -o NAME,SIZE,FSTYPE,MOUNTPOINT
     } | indent
 
-    echo -e "\n# disk usage warnings (>90%)"
+    echo -e "\n# Disk usage warnings (>90%)"
     {
-        mapfile -t DF_WARN < <(df -h | awk '$5+0>90{print "warn:", $0}')
+        mapfile -t DF_WARN < <(df -h | awk '$5+0>90{print "WARN:", $0}')
         if (( ${#DF_WARN[@]} )); then
             printf "%s\n" "${DF_WARN[@]}"
         else
@@ -286,9 +287,9 @@ snapshot() {
         fi
     } | indent
 
-    echo -e "\n# inode usage warnings (>90%)"
+    echo -e "\n# Inode usage warnings (>90%)"
     {
-        mapfile -t INO_WARN < <(df -i | awk '$5+0>90{print "warn: inode usage high:", $0}')
+        mapfile -t INO_WARN < <(df -i | awk '$5+0>90{print "WARN: inode usage high:", $0}')
         if (( ${#INO_WARN[@]} )); then
             printf "%s\n" "${INO_WARN[@]}"
         else
@@ -296,12 +297,13 @@ snapshot() {
         fi
     } | indent
 
-    echo -e "\n# top 10 largest logs"
+    echo -e "\n# Top 10 largest logs"
     {
         du -sh /var/log/* 2>/dev/null | sort -hr | head -n 10 | awk '{size=$1; $1=""; sub(/^ */, ""); printf "%-8s %s\n", size, $0}'
     } | indent
 
-    echo -e "\n# broken symlinks under /usr"
+
+    echo -e "\n# Broken symlinks under /usr"
     {
         mapfile -t SYMLINKS < <(find /usr -xtype l)
         if (( ${#SYMLINKS[@]} )); then
@@ -311,7 +313,7 @@ snapshot() {
         fi
     } | indent
 
-    echo -e "\n# zombie processes"
+    echo -e "\n# Zombie processes"
     {
         mapfile -t ZOMBIES < <(ps -ef | awk '$8=="Z"')
         if (( ${#ZOMBIES[@]} )); then
@@ -321,56 +323,56 @@ snapshot() {
         fi
     } | indent
 
-    # network & dns information
+    #  network & DNS Information
     ## interface details
-    echo -e "\n# interface details"
+    echo -e "\n# Interface details"
     {
         PRIMARY_IFACE="$(ip route | awk '/^default/ {print $5; exit}')"
         IPV4_ADDR="$(ip -4 addr show "$PRIMARY_IFACE" | grep -Po '(?<=inet )\d+(\.\d+){3}')"
         GATEWAY="$(ip route | awk '/^default/ {print $3; exit}')"
-        echo "primary interface:   $PRIMARY_IFACE"
-        echo "ipv4 address:        $IPV4_ADDR"
-        echo "gateway:             $GATEWAY"
+        echo "Primary interface:   $PRIMARY_IFACE"
+        echo "IPv4 address:        $IPV4_ADDR"
+        echo "Gateway:             $GATEWAY"
     } | indent
-
-    ## dns resolver
-    echo -e "\n# dns resolver"
+    
+    ## DNS resolver
+    echo -e "\n# DNS resolver"
     {
         DNS_RESOLVER="none detected"
         for svc in systemd-resolved unbound bind9 dnsmasq cloudflared adguardhome; do
             if systemctl is-active --quiet "$svc"; then
                 case "$svc" in
                     systemd-resolved) DNS_RESOLVER="systemd-resolved" ;;
-                    unbound)          DNS_RESOLVER="unbound" ;;
-                    bind9)            DNS_RESOLVER="bind9" ;;
+                    unbound)          DNS_RESOLVER="Unbound" ;;
+                    bind9)            DNS_RESOLVER="BIND9" ;;
                     dnsmasq)          DNS_RESOLVER="dnsmasq" ;;
-                    cloudflared)      DNS_RESOLVER="cloudflared (doh proxy)" ;;
-                    adguardhome)      DNS_RESOLVER="adguard home" ;;
+                    cloudflared)      DNS_RESOLVER="cloudflared (DoH proxy)" ;;
+                    adguardhome)      DNS_RESOLVER="AdGuard Home" ;;
                 esac
                 break
             fi
         done
-        echo "resolver service:   $DNS_RESOLVER"
+        echo "Resolver service:   $DNS_RESOLVER"
     } | indent
-
+    
     ## nameservers
-    echo -e "\n# nameservers"
+    echo -e "\n# Nameservers"
     {
         awk '/^nameserver/ { printf("    %s\n", $2) }' /etc/resolv.conf
     } | indent
-
+    
     ## routes
-    echo -e "\n# routes"
+    echo -e "\n# Routes"
     {
         ip route
     } | indent
-
-    ## listening tcp/udp ports
-    echo -e "\n# listening tcp/udp ports"
+    
+    ## listening TCP/UDP ports
+    echo -e "\n# Listening TCP/UDP ports"
     {
         # header
         printf "%-6s %-8s %-6s %-6s %-22s %-22s %s\n" \
-            "netid" "state" "recv-q" "send-q" "local address:port" "peer address:port" "process"
+            "Netid" "State" "Recv-Q" "Send-Q" "Local Address:Port" "Peer Address:Port" "Process"
         # data
         ss -tupln | tail -n +2 | awk '{ 
             printf "%-6s %-8s %-6s %-6s %-22s %-22s %s\n", 
@@ -378,8 +380,8 @@ snapshot() {
         }'
     } | indent
 
-    # ipv4 nat table & rules
-    echo -e "\n# ipv4 nat table & rules"
+    # IPv4 NAT table & rules
+    echo -e "\n# IPv4 NAT table & rules"
     {
         if command -v iptables-save &>/dev/null; then
             iptables-save -t nat
@@ -392,9 +394,9 @@ snapshot() {
             echo "(none)"
         fi
     } | indent
-
-    # ipv6 nat table & rules
-    echo -e "\n# ipv6 nat table & rules"
+    
+    # IPv6 NAT table & rules
+    echo -e "\n# IPv6 NAT table & rules"
     {
         if command -v ip6tables-save &>/dev/null; then
             ip6tables-save -t nat
@@ -408,12 +410,12 @@ snapshot() {
         fi
     } | indent
 
-    echo -e "\n# docker containers"
+    echo -e "\n# Docker containers"
     {
         if command -v docker &>/dev/null; then
             docker ps -a
         else
-            echo "docker is not installed"
+            echo "Docker is not installed"
         fi
     } | indent
 
@@ -469,7 +471,7 @@ fi
 
 # determine target mode
 TARGET="${TARGET:-$PWD}"
-# if argument is an executable in path, treat as file
+# if argument is an executable in PATH, treat as file
 if command -v "$TARGET" &>/dev/null; then
     FILE_MODE=1
     FILE_PATH=$(command -v "$TARGET")
@@ -489,7 +491,7 @@ elif command -v dpkg-query &>/dev/null && dpkg-query -W -f='${Status}' "$TARGET"
     mapfile -t PKGFILES < <(dpkg-query -L "$TARGET")
     ROOT="/"
 else
-    echo "error: '$TARGET' is not file, dir, executable, or package" >&2
+    echo "Error: '$TARGET' is not file, dir, executable, or package" >&2
     exit 1
 fi
 
@@ -509,11 +511,11 @@ if (( TOP_N==0 )); then
 fi
 
 if (( TOP_N>0 )); then
-    echo; echo "top $TOP_N largest files in ${COMMON_PATHS[*]} (readable):"
+    echo; echo "Top $TOP_N largest files in ${COMMON_PATHS[*]} (readable):"
     du -x -b "${COMMON_PATHS[@]}" 2>/dev/null | sort -rn -k1 | head -n "$TOP_N" | awk '{cmd="numfmt --to=iec "$1; cmd|getline h; close(cmd); printf "%8s  %s\n",h,$2}'
 fi
 
 if (( DFREPORT )); then
-    echo; echo "disk space for $ROOT:"; df -h "$ROOT"
-    echo; echo "inodes for $ROOT:"; df -i "$ROOT"
+    echo; echo "Disk space for $ROOT:"; df -h "$ROOT"
+    echo; echo "Inodes for $ROOT:"; df -i "$ROOT"
 fi
