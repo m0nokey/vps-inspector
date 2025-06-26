@@ -12,7 +12,7 @@ TARGET=""; PKGFILES=(); FILE_PATH=""
 declare -a SIZES=()
 COMMON_PATHS=(/var/log /home /tmp)
 
-# olors & counters
+# colors & counters
 RESET=$'\e[0m'; DIR_COL=$'\e[1;34m'; LINK_COL=$'\e[1;36m'
 EXEC_COL=$'\e[1;32m'; ARCH_COL=$'\e[1;31m'; ORANGE=$'\e[38;5;214m'
 COUNT_DIRS=0; COUNT_FILES=0
@@ -176,14 +176,14 @@ snapshot() {
     
             # determine server type: dedicated, container or VM
             if command -v systemd-detect-virt &>/dev/null; then
-                vt=$(systemd-detect-virt)
-                case "$vt" in
+                VT=$(systemd-detect-virt)
+                case "$VT" in
                     none)
                         echo "Server type: Dedicated server" ;;
                     lxc|docker|openvz|podman|systemd-nspawn)
-                        echo "Server type: Container ($vt)" ;;
+                        echo "Server type: Container ($VT)" ;;
                     *)
-                        echo "Server type: Virtual machine ($vt)" ;;
+                        echo "Server type: Virtual machine ($VT)" ;;
                 esac
             fi
     
@@ -223,7 +223,7 @@ snapshot() {
     # cron jobs
     echo -e "\n# Cron jobs"
     {
-        echo "SYSTEM CRONTAB (/etc/crontab & /etc/cron.d)"
+        echo "System crontab (/etc/crontab & /etc/cron.d)"
         grep -Ev '^\s*#' /etc/crontab 2>/dev/null
     
         for CRON_FILE in /etc/cron.d/*; do
@@ -246,8 +246,7 @@ snapshot() {
     # custom system services
     echo -e "\n# Custom system services"
     {
-        find /etc/systemd/system -maxdepth 1 -type f -name '*.service' \
-            | xargs -r basename
+        find /etc/systemd/system -maxdepth 1 -type f -name '*.service' | xargs -r basename
     } | indent
     
     # user-defined systemd services
@@ -334,14 +333,14 @@ snapshot() {
         echo "IPv4 address:        $IPV4_ADDR"
         echo "Gateway:             $GATEWAY"
     } | indent
-    
+
     ## DNS resolver
     echo -e "\n# DNS resolver"
     {
         DNS_RESOLVER="none detected"
-        for svc in systemd-resolved unbound bind9 dnsmasq cloudflared adguardhome; do
-            if systemctl is-active --quiet "$svc"; then
-                case "$svc" in
+        for SVC in systemd-resolved unbound bind9 dnsmasq cloudflared adguardhome; do
+            if systemctl is-active --quiet "$SVC"; then
+                case "$SVC" in
                     systemd-resolved) DNS_RESOLVER="systemd-resolved" ;;
                     unbound)          DNS_RESOLVER="Unbound" ;;
                     bind9)            DNS_RESOLVER="BIND9" ;;
