@@ -31,7 +31,7 @@ indent() {
 
 # usage information
 usage() {
-    cat <<'EOF' | perl -pe 's/^ {4}//' >&2
+    cat <<EOF | perl -pe 's/^ {4}//' >&2
     Usage: $0 [options] [path|package|file]
 
     Options:
