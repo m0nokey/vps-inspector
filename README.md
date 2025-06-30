@@ -1,6 +1,6 @@
 # VPS System Overview Script
 
-A single-script system and file audit tool for Linux servers (mainly Debian/Ubuntu).  
+A single-script system and file audit tool for Linux servers (mainly Debian; Arch Linux support coming soon).  
 Quickly check system status, search files, or audit packages — all with one command.
 
 - **No dependencies:** Uses only standard tools available in a minimal Linux installation (`bash`, `find`, `awk`, `sed`, `coreutils`, `ip`, `ss`, etc.).
@@ -147,6 +147,72 @@ date       time    action  package arch   old_version new_version  status
 2025-06-20 12:00   install vim     amd64  2:0.8.0    2:0.8.1       + 
 ```
 
+### Check pkg paths:
+```bash
+curl -sSfL --tlsv1.3 --http2 --proto '=https' "https://raw.githubusercontent.com/m0nokey/vps-inspector/main/vps-inspector.sh" | bash -s -- --package openssh-server
+```
+```bash
+/
+├── etc
+│  ├── default
+│  │  ├── ssh
+│  ├── init.d
+│  │  ├── ssh
+│  ├── pam.d
+│  │  ├── sshd
+│  ├── runit
+│  │  └── runsvdir
+│  │     └── default
+│  ├── ssh
+│  │  ├── moduli
+│  │  ├── sshd_config.d
+│  ├── sv
+│  │  └── ssh
+│  │     ├── finish
+│  │     ├── log
+│  │     │  └── run
+│  │     └── run
+│  ├── ufw
+│  │  └── applications.d
+│  │     └── openssh-server
+├── lib -> usr/lib 
+├── usr
+│  ├── lib
+│  │  ├── openssh
+│  │  │  ├── ssh-session-cleanup
+│  ├── sbin
+│  │  ├── sshd
+│  ├── share
+│  │  ├── apport
+│  │  │  └── package-hooks
+│  │  │     ├── openssh-server.py
+│  │  ├── doc
+│  │  │  ├── openssh-client
+│  │  │  │  ├── examples
+│  │  │  │  │  └── ssh-session-cleanup.service
+│  │  │  ├── openssh-server -> openssh-client 
+│  │  ├── lintian
+│  │  │  ├── overrides
+│  │  │  │  ├── openssh-server
+│  │  ├── man
+│  │  │  ├── man5
+│  │  │  │  ├── authorized_keys.5.gz -> ../man8/sshd.8.gz 
+│  │  │  │  ├── moduli.5.gz
+│  │  │  │  ├── sshd_config.5.gz
+│  │  │  ├── man8
+│  │  │  │  ├── sshd.8.gz
+│  │  ├── openssh
+│  │  │  ├── sshd_config
+│  │  │  └── sshd_config.md5sum
+│  │  ├── runit
+│  │  │  └── meta
+│  │  │     └── ssh
+│  │  │        └── installed
+├── var
+│  ├── log
+│  │  ├── runit
+│  │  │  └── ssh
+```
 
 ### List all files and directories (including hidden) in /etc up to 2 levels:
 ```bash
