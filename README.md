@@ -55,7 +55,8 @@ No installation, no extra packages needed — run any audit/check/search directl
 ### Get a full system snapshot:
 ```bash
 curl -sSfL --tlsv1.3 --http2 --proto '=https' "https://raw.githubusercontent.com/m0nokey/vps-inspector/main/vps-inspector.sh" | bash -s -- -s
-
+```
+```bash
 # system snapshot
 os: debian 11 (bullseye)
 server type: container (docker)
