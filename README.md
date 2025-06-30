@@ -1,42 +1,62 @@
-# vps system overview script
+# VPS System Overview Script
 
-this script is a helper tool for vps (mainly debian) to quickly view the system status with a single command. it uses only standard tools available in a minimal linux installation (bash, find, awk, sed, coreutils, ip, ss, etc.) and does not require any additional packages like `tree`.
+A single-script system and file audit tool for Linux servers (mainly Debian/Ubuntu).  
+Quickly check system status, search files, or audit packages — all with one command.
 
-## features
+- **No dependencies:** Uses only standard tools available in a minimal Linux installation (`bash`, `find`, `awk`, `sed`, `coreutils`, `ip`, `ss`, etc.).
+- **No extra installs:** Does not require additional packages like `tree` or `lsd`.
+- **One-liner:** Run directly with `curl | bash` for instant results.
 
-* list files and directories with optional filters (hidden, depth, include/exclude patterns)
-* display permissions, owners, groups, and classification indicators
-* show top n largest files in common paths (`/var/log`, `/home`, `/tmp`)
-* generate disk usage and inode reports with `df`
-* take a full system snapshot:
+> ⚠️ **Security Notice:**  
+> Always review any script from the internet before running it on your system!
 
-  * os name and version
-  * server type (dedicated, container, or vm)
-  * cpu cores and memory usage
-  * users’ home directory trees
-  * system and user cron jobs
-  * custom and user-defined systemd services
-  * top processes by memory
-  * block devices and filesystems
-  * disk and inode usage warnings
-  * largest log files
-  * broken symlinks and zombie processes
-  * network interfaces, routes, dns resolver, listening ports
-  * iptables/nft nat rules
-  * docker container list (if docker is installed)
-  * package install/upgrade history (from `/var/log/dpkg.log*`)
 
-## installation
+## Features
 
-to install, download the raw script and run it with bash:
+* Fast file & directory tree:
+  * Show hidden files (`-a`)
+  * Limit recursion depth (`-L N`)
+  * Filter by include/exclude regex patterns (`-P/-I`)
+  * List directories only (`-d`)
+  * List directories before files (`--dirsfirst`)
+* Detailed file info:
+  * Show permissions, owner, group (`-p`, `-u`, `-g`)
+  * Classification indicators: dirs/executables/links/archives (`-F`)
+  * Show file size (`-z`) and modification time (`-T`)
+  * Sort by size or mtime (`--sort-size`, `--sort-mtime`)
+  * Display full or relative paths (`-f`)
+* Search and filtering:
+  * Include or exclude files by name/path/extension (regex)
+  * List only files from a specific package (`--package`)
+  * Locate binaries or config files by name
+* Disk & usage reporting:
+  * Show top N largest files in common paths (`-t N`)
+  * Disk usage and inode stats for a path (`-r`)
+  * Disk/inode usage warnings (>90%)
+  * Summarize largest log files
+* System snapshot & audit (`-s`):
+  * OS name and version
+  * Server type (dedicated, container, VM)
+  * CPU and memory stats
+  * List users and home directories
+  * System and user cron jobs
+  * Custom and user-defined systemd services
+  * Top processes by memory usage
+  * Block devices, filesystems, partitions
+  * Broken symlinks and zombie processes
+  * Network info: interfaces, IPs, routes, DNS, open ports
+  * NAT rules (iptables/ip6tables)
+  * Docker containers (if installed)
+  * Package install/upgrade history (`/var/log/dpkg.log*`)
 
+## Usage
+No installation, no extra packages needed — run any audit/check/search directly from your shell with one line:
+
+### Get a full system snapshot:
 ```bash
 curl -sSfL --tlsv1.3 --http2 --proto '=https' "https://raw.githubusercontent.com/m0nokey/vps-inspector/main/vps-inspector.sh" | bash -s -- -s
 ```
 
-**example full snapshot output:**
-
-```bash
 # system snapshot
 os: debian 11 (bullseye)
 server type: container (docker)
@@ -127,11 +147,24 @@ date       time    action  package arch   old_version new_version  status
 2025-06-20 12:00   install vim     amd64  2:0.8.0    2:0.8.1       + 
 ```
 
-## usage
 
+### List all files and directories (including hidden) in /etc up to 2 levels:
 ```bash
-./script.sh [options] [path|package|file]
+curl -sSfL --tlsv1.3 --http2 --proto '=https' "https://raw.githubusercontent.com/m0nokey/vps-inspector/main/vps-inspector.sh" | bash -s -- -a -L 2 /etc
 ```
+### Show the top 5 largest files in /var/log, /home, /tmp:
+```bash
+curl -sSfL --tlsv1.3 --http2 --proto '=https' "https://raw.githubusercontent.com/m0nokey/vps-inspector/main/vps-inspector.sh" | bash -s -- -t 5
+```
+### List only .conf files anywhere in /etc:
+```bash
+curl -sSfL --tlsv1.3 --http2 --proto '=https' "https://raw.githubusercontent.com/m0nokey/vps-inspector/main/vps-inspector.sh" | bash -s -- -P '\.conf$' /etc
+```
+### See more options and examples:
+```bash
+curl -sSfL --tlsv1.3 --http2 --proto '=https' "https://raw.githubusercontent.com/m0nokey/vps-inspector/main/vps-inspector.sh" | bash -s -- -h
+```
+
 
 ## license
 
