@@ -24,14 +24,15 @@ MAXGROUP=$(awk -F: '{if(length($1)>max) max=length($1)} END{print max+0}' /etc/g
 MAXPERM=10
 MAXSIZE=9
 
-# function to indent data lines by 4 spaces
+# function to indent data lines by n spaces
 indent() {
-    sed 's/^/    /'
+    NUM="$1"
+    sed -E "s/^ {$NUM}//"
 }
 
 # usage information
 usage() {
-    cat <<EOF | perl -pe 's/^ {4}//' >&2
+    cat <<EOF | indent 4 >&2
     Usage: $0 [options] [path|package|file]
 
     Options:
@@ -425,7 +426,7 @@ snapshot() {
             echo "CPU cores: $(nproc)"
             read _ TOTAL_MEM USED_MEM _ < <(free -h | awk '/^Mem:/')
             echo "Memory: $USED_MEM/$TOTAL_MEM"
-    } | indent
+    } | indent 4
 
     # Users & Home directory trees
     echo -e "\n# Users & Home directory trees"
@@ -453,7 +454,7 @@ snapshot() {
             fi
             echo
         done
-    } | indent
+    } | indent 4
 
     # cron jobs
     echo -e "\n# Cron jobs"
@@ -476,13 +477,13 @@ snapshot() {
             echo "User: $C_USER"
             crontab -l -u "$C_USER" 2>/dev/null || echo "(none)"
         done
-    } | indent
+    } | indent 4
 
     # custom system services
     echo -e "\n# Custom system services"
     {
         find /etc/systemd/system -maxdepth 1 -type f -name '*.service' | xargs -r basename
-    } | indent
+    } | indent 4
 
     # user-defined systemd services
     echo -e "\n# User-defined systemd services"
@@ -493,22 +494,22 @@ snapshot() {
             su - "$S_USER" -c 'systemctl --user list-unit-files --type=service --no-pager' 2>/dev/null || echo "(none)"
             echo
         done
-    } | indent
+    } | indent 4
 
     echo -e "\n# Top 10 by %MEM"
     {
         ps aux --sort=-%mem | head -n 11
-    } | indent
+    } | indent 4
 
     echo -e "\n# Block devices"
     {
         lsblk -d -o NAME,SIZE,TYPE,MODEL
-    } | indent
+    } | indent 4
 
     echo -e "\n# Filesystems & partitions"
     {
         lsblk -o NAME,SIZE,FSTYPE,MOUNTPOINT
-    } | indent
+    } | indent 4
 
     echo -e "\n# Disk usage warnings (>90%)"
     {
@@ -518,7 +519,7 @@ snapshot() {
         else
             echo "(none)"
         fi
-    } | indent
+    } | indent 4
 
     echo -e "\n# Inode usage warnings (>90%)"
     {
@@ -528,12 +529,12 @@ snapshot() {
         else
             echo "(none)"
         fi
-    } | indent
+    } | indent 4
 
     echo -e "\n# Top 10 largest logs"
     {
         du -sh /var/log/* 2>/dev/null | sort -hr | head -n 10 | awk '{size=$1; $1=""; sub(/^ */, ""); printf "%-8s %s\n", size, $0}'
-    } | indent
+    } | indent 4
 
 
     echo -e "\n# Broken symlinks under /usr"
@@ -544,7 +545,7 @@ snapshot() {
         else
             echo "(none)"
         fi
-    } | indent
+    } | indent 4
 
     echo -e "\n# Zombie processes"
     {
@@ -554,7 +555,7 @@ snapshot() {
         else
             echo "(none)"
         fi
-    } | indent
+    } | indent 4
 
     #  network & DNS Information
     ## interface details
@@ -566,7 +567,7 @@ snapshot() {
         echo "Primary interface:   $PRIMARY_IFACE"
         echo "IPv4 address:        $IPV4_ADDR"
         echo "Gateway:             $GATEWAY"
-    } | indent
+    } | indent 4
 
     ## DNS resolver
     echo -e "\n# DNS resolver"
@@ -586,19 +587,19 @@ snapshot() {
             fi
         done
         echo "Resolver service:   $DNS_RESOLVER"
-    } | indent
+    } | indent 4
 
     ## nameservers
     echo -e "\n# Nameservers"
     {
         awk '/^nameserver/ { printf("    %s\n", $2) }' /etc/resolv.conf
-    } | indent
+    } | indent 4
 
     ## routes
     echo -e "\n# Routes"
     {
         ip route
-    } | indent
+    } | indent 4
 
     ## listening TCP/UDP ports
     echo -e "\n# Listening TCP/UDP ports"
@@ -609,7 +610,7 @@ snapshot() {
         ss -tupln | tail -n +2 | awk '{
             printf "%-6s %-8s %-6s %-6s %-22s %-22s %s\n", $1, $2, $3, $4, $5, $6, $7
         }'
-    } | indent
+    } | indent 4
 
     # IPv4 NAT table & rules
     echo -e "\n# IPv4 NAT table & rules"
@@ -624,7 +625,7 @@ snapshot() {
         else
             echo "(none)"
         fi
-    } | indent
+    } | indent 4
     
     # IPv6 NAT table & rules
     echo -e "\n# IPv6 NAT table & rules"
@@ -639,7 +640,7 @@ snapshot() {
         else
             echo "(none)"
         fi
-    } | indent
+    } | indent 4
 
     echo -e "\n# Docker containers"
     {
@@ -648,7 +649,7 @@ snapshot() {
         else
             echo "Docker is not installed"
         fi
-    } | indent
+    } | indent 4
 
     echo -e "\n# Package install/upgrade history"
     {
@@ -666,7 +667,7 @@ snapshot() {
                 STATUS=$(dpkg-query -W -f='${Status}' "$PACKAGE" 2>/dev/null | grep -q "installed" && echo "+" || echo "-")
                 printf "%-10s %-8s %-8s %-15s %-5s %-12s %-12s %s\n" "$DATE" "$TIME" "$ACTION" "$PACKAGE" "$ARCH" "$OLD_REV" "$NEW_REV" "$STATUS"
             done
-    } | column -t | indent
+    } | column -t | indent 4
 }
 
 # parse options
