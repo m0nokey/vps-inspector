@@ -24,15 +24,22 @@ MAXGROUP=$(awk -F: '{if(length($1)>max) max=length($1)} END{print max+0}' /etc/g
 MAXPERM=10
 MAXSIZE=9
 
-# function to indent data lines by n spaces
+# indent: add or remove N leading spaces per line using sed
+# Usage: indent add N   # add N spaces
+#        indent rm  N   # remove up to N spaces
 indent() {
-    NUM="$1"
-    sed -E "s/^ {$NUM}//"
+    MODE="$1"
+    NUM="$2"
+    if [[ "$MODE" == "add" ]]; then
+        sed "s/^/$(printf '%*s' "$NUM")/"
+    elif [[ "$MODE" == "rm" ]]; then
+        sed -E "s/^ {0,$NUM}//"
+    fi
 }
 
 # usage information
 usage() {
-    cat <<EOF | indent 4 >&2
+    cat <<EOF | indent rm 4 >&2
     Usage: $0 [options] [path|package|file]
 
     Options:
@@ -138,9 +145,7 @@ print_tree() {
     local HIDE_ARGS=()
     (( SHOW_HIDDEN == 0 )) && HIDE_ARGS=(-not -name '.*')
 
-    mapfile -d '' -t ENTRIES < <(
-        find "$DIR" -mindepth 1 -maxdepth 1 "${HIDE_ARGS[@]}" -print0 2>/dev/null | sort -z --version-sort --ignore-case
-    )
+    mapfile -d '' -t ENTRIES < <(find "$DIR" -mindepth 1 -maxdepth 1 "${HIDE_ARGS[@]}" -print0 2>/dev/null | sort -z --version-sort --ignore-case)
 
     if (( DIRS_FIRST )); then
         local DLIST=() SLINKDIRS=() FLIST=()
@@ -286,8 +291,7 @@ print_tree() {
             elif [[ $REL =~ \.(tar|tgz|zip|rar|gz|bz2|xz)$ ]]; then COL2=$ARCH_COL
             else COL2=$RESET
             fi
-            printf "$FMT%s%s %b%s%b -> %b%s%b %b%s%b\n" \
-                "${printf_args[@]}" "${PREFIX}${PTR}" "$LINK_COL" "$DISP" "$RESET" "$COL2" "$REL" "$RESET" "$LINK_COL" "$SUF" "$RESET"
+            printf "$FMT%s%s %b%s%b -> %b%s%b %b%s%b\n" "${printf_args[@]}" "${PREFIX}${PTR}" "$LINK_COL" "$DISP" "$RESET" "$COL2" "$REL" "$RESET" "$LINK_COL" "$SUF" "$RESET"
             continue
         fi
 
@@ -426,7 +430,7 @@ snapshot() {
             echo "CPU cores: $(nproc)"
             read _ TOTAL_MEM USED_MEM _ < <(free -h | awk '/^Mem:/')
             echo "Memory: $USED_MEM/$TOTAL_MEM"
-    } | indent 4
+    } | indent add 4
 
     # Users & Home directory trees
     echo -e "\n# Users & Home directory trees"
@@ -454,7 +458,7 @@ snapshot() {
             fi
             echo
         done
-    } | indent 4
+    } | indent add 4
 
     # cron jobs
     echo -e "\n# Cron jobs"
@@ -477,7 +481,7 @@ snapshot() {
             echo "User: $C_USER"
             crontab -l -u "$C_USER" 2>/dev/null || echo "(none)"
         done
-    } | indent 4
+    } | indent add 4
 
     # custom system services
     echo -e "\n# Custom system services"
@@ -494,22 +498,22 @@ snapshot() {
             su - "$S_USER" -c 'systemctl --user list-unit-files --type=service --no-pager' 2>/dev/null || echo "(none)"
             echo
         done
-    } | indent 4
+    } | indent add 4
 
     echo -e "\n# Top 10 by %MEM"
     {
         ps aux --sort=-%mem | head -n 11
-    } | indent 4
+    } | indent add 4
 
     echo -e "\n# Block devices"
     {
         lsblk -d -o NAME,SIZE,TYPE,MODEL
-    } | indent 4
+    } | indent add 4
 
     echo -e "\n# Filesystems & partitions"
     {
         lsblk -o NAME,SIZE,FSTYPE,MOUNTPOINT
-    } | indent 4
+    } | indent add 4
 
     echo -e "\n# Disk usage warnings (>90%)"
     {
@@ -519,7 +523,7 @@ snapshot() {
         else
             echo "(none)"
         fi
-    } | indent 4
+    } | indent add 4
 
     echo -e "\n# Inode usage warnings (>90%)"
     {
@@ -529,12 +533,12 @@ snapshot() {
         else
             echo "(none)"
         fi
-    } | indent 4
+    } | indent add 4
 
     echo -e "\n# Top 10 largest logs"
     {
         du -sh /var/log/* 2>/dev/null | sort -hr | head -n 10 | awk '{size=$1; $1=""; sub(/^ */, ""); printf "%-8s %s\n", size, $0}'
-    } | indent 4
+    } | indent add 4
 
 
     echo -e "\n# Broken symlinks under /usr"
@@ -545,7 +549,7 @@ snapshot() {
         else
             echo "(none)"
         fi
-    } | indent 4
+    } | indent add 4
 
     echo -e "\n# Zombie processes"
     {
@@ -555,7 +559,7 @@ snapshot() {
         else
             echo "(none)"
         fi
-    } | indent 4
+    } | indent add 4
 
     #  network & DNS Information
     ## interface details
@@ -567,7 +571,7 @@ snapshot() {
         echo "Primary interface:   $PRIMARY_IFACE"
         echo "IPv4 address:        $IPV4_ADDR"
         echo "Gateway:             $GATEWAY"
-    } | indent 4
+    } | indent add 4
 
     ## DNS resolver
     echo -e "\n# DNS resolver"
@@ -587,19 +591,19 @@ snapshot() {
             fi
         done
         echo "Resolver service:   $DNS_RESOLVER"
-    } | indent 4
+    } | indent add 4
 
     ## nameservers
     echo -e "\n# Nameservers"
     {
         awk '/^nameserver/ { printf("    %s\n", $2) }' /etc/resolv.conf
-    } | indent 4
+    } | indent add 4
 
     ## routes
     echo -e "\n# Routes"
     {
         ip route
-    } | indent 4
+    } | indent add 4
 
     ## listening TCP/UDP ports
     echo -e "\n# Listening TCP/UDP ports"
@@ -610,7 +614,7 @@ snapshot() {
         ss -tupln | tail -n +2 | awk '{
             printf "%-6s %-8s %-6s %-6s %-22s %-22s %s\n", $1, $2, $3, $4, $5, $6, $7
         }'
-    } | indent 4
+    } | indent add 4
 
     # IPv4 NAT table & rules
     echo -e "\n# IPv4 NAT table & rules"
@@ -625,7 +629,7 @@ snapshot() {
         else
             echo "(none)"
         fi
-    } | indent 4
+    } | indent add 4
     
     # IPv6 NAT table & rules
     echo -e "\n# IPv6 NAT table & rules"
@@ -640,7 +644,7 @@ snapshot() {
         else
             echo "(none)"
         fi
-    } | indent 4
+    } | indent add 4
 
     echo -e "\n# Docker containers"
     {
@@ -649,7 +653,7 @@ snapshot() {
         else
             echo "Docker is not installed"
         fi
-    } | indent 4
+    } | indent add 4
 
     echo -e "\n# Package install/upgrade history"
     {
@@ -667,7 +671,7 @@ snapshot() {
                 STATUS=$(dpkg-query -W -f='${Status}' "$PACKAGE" 2>/dev/null | grep -q "installed" && echo "+" || echo "-")
                 printf "%-10s %-8s %-8s %-15s %-5s %-12s %-12s %s\n" "$DATE" "$TIME" "$ACTION" "$PACKAGE" "$ARCH" "$OLD_REV" "$NEW_REV" "$STATUS"
             done
-    } | column -t | indent 4
+    } | column -t | indent add 4
 }
 
 # parse options
