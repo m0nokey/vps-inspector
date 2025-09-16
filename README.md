@@ -1,6 +1,6 @@
 # VPS System Overview Script
 
-A single-script system and file audit tool for Linux servers (mainly Debian; Arch Linux support coming soon).  
+A single-script system and file audit tool for Linux servers (Debian; Arch Linux).  
 Quickly check system status, search files, or audit packages — all with one command.
 
 - **No dependencies:** Uses only standard tools available in a minimal Linux installation (`bash`, `find`, `awk`, `sed`, `coreutils`, `ip`, `ss`, etc.).
