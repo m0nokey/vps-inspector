@@ -457,21 +457,17 @@ snapshot() {
                 fi
             fi
 
-            echo "CPU cores: $(nproc)"
-            read _ TOTAL_MEM USED_MEM _ < <(free -h | awk '/^Mem:/')
-            echo "Memory: $USED_MEM/$TOTAL_MEM"
     } | indent + 4
 
     cpu_report
     memory_report
-    disk_report
+    uptime_report
     load_report
     time_report
-    uptime_report
+    disk_report
     network_report
     ports_report
     users_report
-    docker_report
 
     # Users & Home directory trees
     echo -e "\n# Users & Home directory trees"
@@ -528,7 +524,7 @@ snapshot() {
     echo -e "\n# Custom system services"
     {
         if [[ -d /etc/systemd/system ]]; then
-            find /etc/systemd/system -maxdepth 1 -type f -name '*.service' | xargs -r basename
+            find /etc/systemd/system -maxdepth 1 -type f -name '*.service' -exec basename {} \;
         else
             echo "(systemd directory not found)"
         fi
@@ -681,19 +677,6 @@ snapshot() {
         fi
     } | indent + 4
 
-    ## listening TCP/UDP ports
-    echo -e "\n# Listening TCP/UDP ports"
-    {
-        if have ss; then
-            printf "%-6s %-8s %-6s %-6s %-22s %-22s %s\n" "Netid" "State" "Recv-Q" "Send-Q" "Local Address:Port" "Peer Address:Port" "Process"
-            ss -tupln | tail -n +2 | awk '{
-                printf "%-6s %-8s %-6s %-6s %-22s %-22s %s\n", $1, $2, $3, $4, $5, $6, $7
-            }'
-        else
-            echo "ss not found"
-        fi
-    } | indent + 4
-
     # IPv4 NAT table & rules
     echo -e "\n# IPv4 NAT table & rules"
     {
@@ -724,14 +707,7 @@ snapshot() {
         fi
     } | indent + 4
 
-    echo -e "\n# Docker containers"
-    {
-        if command -v docker &>/dev/null; then
-            docker ps -a
-        else
-            echo "Docker is not installed"
-        fi
-    } | indent + 4
+    docker_snapshot_report
 
     echo -e "\n# Package install/upgrade history"
     {
@@ -1018,7 +994,25 @@ network_report() {
 ports_report() {
     echo -e "\n# Listening TCP/UDP ports"
     if have ss; then
-        ss -tupln 2>/dev/null | indent + 4 || echo "    Cannot read listening ports"
+        {
+            printf "%-6s %-8s %-6s %-6s %-30s %-22s %s\n" \
+                "Netid" "State" "Recv-Q" "Send-Q" "Local Address:Port" "Peer Address:Port" "Process"
+
+            ss -tuplnH 2>/dev/null | awk '
+                {
+                    process = ""
+                    if (NF >= 7) {
+                        process = $7
+                        for (i = 8; i <= NF; i++) {
+                            process = process " " $i
+                        }
+                    }
+
+                    printf "%-6s %-8s %-6s %-6s %-30s %-22s %s\n",
+                        $1, $2, $3, $4, $5, $6, process
+                }
+            '
+        } | indent + 4 || echo "    Cannot read listening ports"
     else
         echo "    ss is not available"
     fi
@@ -1026,10 +1020,8 @@ ports_report() {
 
 users_report() {
     echo -e "\n# Users"
-    awk -F: '
-        function print_user() {
-            printf "%-17s uid=%-5s home=%-28s shell=%s\n", $1, $3, $6, $7
-        }
+    {
+        awk -F: '
         $3 < 1000 && $3 != 0 {
             system_users[++system_count] = $0
         }
@@ -1064,26 +1056,27 @@ users_report() {
                 printf "%-17s uid=%-5s home=%-28s shell=%s\n", f[1], f[3], f[6], f[7]
             }
         }
-    ' /etc/passwd
+        ' /etc/passwd
 
-    echo
-    echo "Group-based sudo users:"
-    if have getent; then
-        local sudo_members wheel_members
-        sudo_members="$(getent group sudo 2>/dev/null | awk -F: '{print $4}')"
-        wheel_members="$(getent group wheel 2>/dev/null | awk -F: '{print $4}')"
-        if [[ -n "$sudo_members" ]]; then
-            echo "from sudo: $sudo_members"
+        echo
+        echo "Group-based sudo users:"
+        if have getent; then
+            local sudo_members wheel_members
+            sudo_members="$(getent group sudo 2>/dev/null | awk -F: '{print $4}')"
+            wheel_members="$(getent group wheel 2>/dev/null | awk -F: '{print $4}')"
+            if [[ -n "$sudo_members" ]]; then
+                echo "from sudo: $sudo_members"
+            fi
+            if [[ -n "$wheel_members" ]]; then
+                echo "from wheel: $wheel_members"
+            fi
+            if [[ -z "$sudo_members" && -z "$wheel_members" ]]; then
+                echo "none"
+            fi
+        else
+            echo "getent not found"
         fi
-        if [[ -n "$wheel_members" ]]; then
-            echo "from wheel: $wheel_members"
-        fi
-        if [[ -z "$sudo_members" && -z "$wheel_members" ]]; then
-            echo "none"
-        fi
-    else
-        echo "getent not found"
-    fi
+    } | indent + 4
 }
 
 mask_secrets() {
@@ -1120,6 +1113,64 @@ docker_report() {
     echo
     echo "    volumes:"
     docker volume ls 2>/dev/null | indent + 4 || echo "    Cannot list volumes"
+}
+
+docker_snapshot_report() {
+    local ids id name image state restart health project ports
+
+    echo -e "\n# Docker"
+    if ! have docker; then
+        echo "    Docker is not installed or not available"
+        return 0
+    fi
+
+    echo
+    echo "    docker version:"
+    docker version 2>/dev/null | indent + 4 || echo "    Cannot read docker version"
+
+    echo
+    echo "    docker info:"
+    docker info 2>/dev/null | indent + 4 || echo "    Cannot read docker info"
+
+    echo
+    echo "    containers:"
+    docker ps -a --format 'table {{.ID}}\t{{.Names}}\t{{.Image}}\t{{.Status}}\t{{.Ports}}' 2>/dev/null | indent + 4 \
+        || echo "    Cannot list containers"
+
+    echo
+    echo "    networks:"
+    docker network ls 2>/dev/null | indent + 4 || echo "    Cannot list networks"
+
+    echo
+    echo "    volumes:"
+    docker volume ls 2>/dev/null | indent + 4 || echo "    Cannot list volumes"
+
+    echo
+    echo "    all containers summary:"
+    printf "    %-24s %-28s %-18s %-8s %-12s %-20s %s\n" \
+        "NAME" "IMAGE" "STATE" "RESTART" "HEALTH" "COMPOSE" "PORTS"
+
+    ids="$(docker ps -aq 2>/dev/null || true)"
+    if [[ -z "$ids" ]]; then
+        echo "    No containers or cannot list containers"
+        return 0
+    fi
+
+    printf "%s\n" "$ids" | while read -r id; do
+        [[ -n "$id" ]] || continue
+        name="$(docker_inspect_field "$id" '{{.Name}}' | sed 's#^/##')"
+        image="$(docker_inspect_field "$id" '{{.Config.Image}}')"
+        state="$(docker_inspect_field "$id" '{{.State.Status}}')"
+        restart="$(docker_inspect_field "$id" '{{.RestartCount}}')"
+        health="$(docker_inspect_field "$id" '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}')"
+        project="$(docker_inspect_field "$id" '{{index .Config.Labels "com.docker.compose.project"}}')"
+        ports="$(docker port "$id" 2>/dev/null | tr '\n' ',' | sed 's/,$//')"
+        [[ -n "$ports" ]] || ports="-"
+        [[ -n "$project" ]] || project="-"
+
+        printf "    %-24.24s %-28.28s %-18.18s %-8.8s %-12.12s %-20.20s %s\n" \
+            "$name" "$image" "$state" "$restart" "$health" "$project" "$ports"
+    done
 }
 
 docker_container_report() {
