@@ -7,7 +7,11 @@ INCLUDE=(); EXCLUDE=()
 FULL_PATH=0; CLASSIFY=0
 SHOW_PERM=0; SHOW_USER=0; SHOW_GROUP=0
 DIRS_FIRST=0; PACKAGE_MODE=0; FILE_MODE=0
-TOP_N=0; DFREPORT=0; SNAPSHOT=0
+TOP_N=0; DFREPORT=0; SNAPSHOT=0; ALL_REPORT=0
+CPU_REPORT=0; MEMORY_REPORT=0; DISK_REPORT=0; LOAD_REPORT=0; UPTIME_REPORT=0
+NETWORK_REPORT=0; PORTS_REPORT=0; USERS_REPORT=0; DOCKER_REPORT=0
+RUNTIME_REPORT=0
+DOCKER_CONTAINER=""
 SHOW_SIZE=0; SORT_SIZE=0
 SHOW_TIME=0; SORT_MTIME=0
 TARGET=""; PKGFILES=(); FILE_PATH=""
@@ -62,6 +66,19 @@ usage() {
       -t N, --top N        Show top N largest files in /var/log,/home,/tmp
       -r, --dfreport       Show df -h and df -i for target
       -s, --snapshot       Quick system snapshot
+      --all                Show full system snapshot and Docker overview if available
+      --cpu                Show CPU information
+      --memory             Show memory information
+      --disk               Show disk information
+      --load               Show load average
+      --uptime             Show uptime
+      --runtime            Show virtualization and cgroup runtime hints
+      --network            Show network information
+      --ports              Show listening ports
+      --users              Show users summary
+      --docker             Show Docker overview if Docker is installed
+      --docker-container ID|NAME
+                           Show deep snapshot for one Docker container
       -h, --help           Show this help and exit
 
     Examples:
@@ -425,6 +442,19 @@ snapshot() {
                     *)
                         echo "Server type: Virtual machine ($VT)" ;;
                 esac
+            elif [[ -f /.dockerenv ]]; then
+                echo "Server type: Container (docker)"
+            else
+                echo "Server type: unknown"
+            fi
+
+            echo "Cgroup filesystem: $(stat -fc %T /sys/fs/cgroup 2>/dev/null || echo unknown)"
+            if [[ -r /proc/self/cgroup ]]; then
+                if grep -q '^0::' /proc/self/cgroup 2>/dev/null; then
+                    echo "Cgroup mode: unified/v2"
+                else
+                    echo "Cgroup mode: legacy/v1 or hybrid"
+                fi
             fi
 
             echo "CPU cores: $(nproc)"
@@ -486,33 +516,55 @@ snapshot() {
     # custom system services
     echo -e "\n# Custom system services"
     {
-        find /etc/systemd/system -maxdepth 1 -type f -name '*.service' | xargs -r basename
+        if [[ -d /etc/systemd/system ]]; then
+            find /etc/systemd/system -maxdepth 1 -type f -name '*.service' | xargs -r basename
+        else
+            echo "(systemd directory not found)"
+        fi
     } | indent + 4
 
     # user-defined systemd services
     echo -e "\n# User-defined systemd services"
     {
-        awk -F: '$3>=1000 && $7 !~ /(nologin|false)$/ {print $1}' /etc/passwd \
-        | while read -r S_USER; do
-            echo "User: $S_USER"
-            su - "$S_USER" -c 'systemctl --user list-unit-files --type=service --no-pager' 2>/dev/null || echo "(none)"
-            echo
-        done
+        if have systemctl; then
+            awk -F: '$3>=1000 && $7 !~ /(nologin|false)$/ {print $1}' /etc/passwd \
+            | while read -r S_USER; do
+                echo "User: $S_USER"
+                su - "$S_USER" -c 'systemctl --user list-unit-files --type=service --no-pager' 2>/dev/null || echo "(none)"
+                echo
+            done
+        else
+            echo "systemctl not found"
+        fi
     } | indent + 4
 
     echo -e "\n# Top 10 by %MEM"
     {
-        ps aux --sort=-%mem | head -n 11
+        if ps aux --sort=-%mem >/dev/null 2>&1; then
+            ps aux --sort=-%mem | head -n 11
+        elif ps aux >/dev/null 2>&1; then
+            ps aux | head -n 11
+        else
+            ps 2>/dev/null | head -n 11 || echo "ps output unavailable"
+        fi
     } | indent + 4
 
     echo -e "\n# Block devices"
     {
-        lsblk -d -o NAME,SIZE,TYPE,MODEL
+        if have lsblk; then
+            lsblk -d -o NAME,SIZE,TYPE,MODEL
+        else
+            echo "lsblk not found"
+        fi
     } | indent + 4
 
     echo -e "\n# Filesystems & partitions"
     {
-        lsblk -o NAME,SIZE,FSTYPE,MOUNTPOINT
+        if have lsblk; then
+            lsblk -o NAME,SIZE,FSTYPE,MOUNTPOINT
+        else
+            echo "lsblk not found"
+        fi
     } | indent + 4
 
     echo -e "\n# Disk usage warnings (>90%)"
@@ -565,9 +617,16 @@ snapshot() {
     ## interface details
     echo -e "\n# Interface details"
     {
-        local PRIMARY_IFACE="$(ip route | awk '/^default/ {print $5; exit}')"
-        local IPV4_ADDR="$(ip -4 addr show "$PRIMARY_IFACE" | grep -Po '(?<=inet )\d+(\.\d+){3}')"
-        local GATEWAY="$(ip route | awk '/^default/ {print $3; exit}')"
+        local PRIMARY_IFACE=""
+        local IPV4_ADDR=""
+        local GATEWAY=""
+        if have ip; then
+            PRIMARY_IFACE="$(ip route 2>/dev/null | awk '/^default/ {print $5; exit}')"
+            if [[ -n "$PRIMARY_IFACE" ]]; then
+                IPV4_ADDR="$(ip -4 addr show "$PRIMARY_IFACE" 2>/dev/null | awk '/inet / { sub(/\/.*/, "", $2); print $2; exit }')"
+            fi
+            GATEWAY="$(ip route 2>/dev/null | awk '/^default/ {print $3; exit}')"
+        fi
         echo "Primary interface:   $PRIMARY_IFACE"
         echo "IPv4 address:        $IPV4_ADDR"
         echo "Gateway:             $GATEWAY"
@@ -577,19 +636,21 @@ snapshot() {
     echo -e "\n# DNS resolver"
     {
         local DNS_RESOLVER="none detected"
-        for SVC in systemd-resolved unbound bind9 dnsmasq cloudflared adguardhome; do
-            if systemctl is-active --quiet "$SVC"; then
-                case "$SVC" in
-                    systemd-resolved) DNS_RESOLVER="systemd-resolved" ;;
-                    unbound)          DNS_RESOLVER="Unbound" ;;
-                    bind9)            DNS_RESOLVER="BIND9" ;;
-                    dnsmasq)          DNS_RESOLVER="dnsmasq" ;;
-                    cloudflared)      DNS_RESOLVER="cloudflared (DoH proxy)" ;;
-                    adguardhome)      DNS_RESOLVER="AdGuard Home" ;;
-                esac
-                break
-            fi
-        done
+        if have systemctl; then
+            for SVC in systemd-resolved unbound bind9 dnsmasq cloudflared adguardhome; do
+                if systemctl is-active --quiet "$SVC"; then
+                    case "$SVC" in
+                        systemd-resolved) DNS_RESOLVER="systemd-resolved" ;;
+                        unbound)          DNS_RESOLVER="Unbound" ;;
+                        bind9)            DNS_RESOLVER="BIND9" ;;
+                        dnsmasq)          DNS_RESOLVER="dnsmasq" ;;
+                        cloudflared)      DNS_RESOLVER="cloudflared (DoH proxy)" ;;
+                        adguardhome)      DNS_RESOLVER="AdGuard Home" ;;
+                    esac
+                    break
+                fi
+            done
+        fi
         echo "Resolver service:   $DNS_RESOLVER"
     } | indent + 4
 
@@ -602,18 +663,24 @@ snapshot() {
     ## routes
     echo -e "\n# Routes"
     {
-        ip route
+        if have ip; then
+            ip route 2>/dev/null || echo "routes unavailable"
+        else
+            echo "ip not found"
+        fi
     } | indent + 4
 
     ## listening TCP/UDP ports
     echo -e "\n# Listening TCP/UDP ports"
     {
-        # header
-        printf "%-6s %-8s %-6s %-6s %-22s %-22s %s\n" "Netid" "State" "Recv-Q" "Send-Q" "Local Address:Port" "Peer Address:Port" "Process"
-        # data
-        ss -tupln | tail -n +2 | awk '{
-            printf "%-6s %-8s %-6s %-6s %-22s %-22s %s\n", $1, $2, $3, $4, $5, $6, $7
-        }'
+        if have ss; then
+            printf "%-6s %-8s %-6s %-6s %-22s %-22s %s\n" "Netid" "State" "Recv-Q" "Send-Q" "Local Address:Port" "Peer Address:Port" "Process"
+            ss -tupln | tail -n +2 | awk '{
+                printf "%-6s %-8s %-6s %-6s %-22s %-22s %s\n", $1, $2, $3, $4, $5, $6, $7
+            }'
+        else
+            echo "ss not found"
+        fi
     } | indent + 4
 
     # IPv4 NAT table & rules
@@ -659,19 +726,388 @@ snapshot() {
     {
         printf "%-10s %-8s %-8s %-15s %-5s %-12s %-12s %s\n" "DATE" "TIME" "ACTION" "PACKAGE" "ARCH" "OLD_VERSION" "NEW_VERSION" "STATUS"
 
-        grep -hE ' install | upgrade ' /var/log/dpkg.log* 2>/dev/null \
-          | awk '{
-                n = split($4,a,":");
-                pkg  = a[1];
-                arch = a[2];
-                printf "%s %s %s %s %s %s %s\n", $1, $2, $3, pkg, arch, $5, $6
-            }' \
-          | sort -k1,1 -k2,2 \
-          | while read DATE TIME ACTION PACKAGE ARCH OLD_REV NEW_REV; do
-                STATUS=$(dpkg-query -W -f='${Status}' "$PACKAGE" 2>/dev/null | grep -q "installed" && echo "+" || echo "-")
-                printf "%-10s %-8s %-8s %-15s %-5s %-12s %-12s %s\n" "$DATE" "$TIME" "$ACTION" "$PACKAGE" "$ARCH" "$OLD_REV" "$NEW_REV" "$STATUS"
-            done
-    } | column -t | indent + 4
+        if have dpkg-query; then
+            grep -hE ' install | upgrade ' /var/log/dpkg.log* 2>/dev/null \
+              | awk '{
+                    n = split($4,a,":");
+                    pkg  = a[1];
+                    arch = a[2];
+                    printf "%s %s %s %s %s %s %s\n", $1, $2, $3, pkg, arch, $5, $6
+                }' \
+              | sort -k1,1 -k2,2 \
+              | while read DATE TIME ACTION PACKAGE ARCH OLD_REV NEW_REV; do
+                    STATUS=$(dpkg-query -W -f='${Status}' "$PACKAGE" 2>/dev/null | grep -q "installed" && echo "+" || echo "-")
+                    printf "%-10s %-8s %-8s %-15s %-5s %-12s %-12s %s\n" "$DATE" "$TIME" "$ACTION" "$PACKAGE" "$ARCH" "$OLD_REV" "$NEW_REV" "$STATUS"
+                done
+        else
+            echo "dpkg-query not found"
+        fi
+    } | {
+        if have column; then column -t; else cat; fi
+    } | indent + 4
+}
+
+have() {
+    command -v "$1" >/dev/null 2>&1
+}
+
+field() {
+    printf "    %-20s %s\n" "$1:" "$2"
+}
+
+kib_to_human() {
+    awk -v kib="${1:-0}" 'BEGIN {
+        mib = kib / 1024;
+        gib = mib / 1024;
+        if (gib >= 1) printf "%.2f GiB", gib;
+        else if (mib >= 1) printf "%.2f MiB", mib;
+        else printf "%d KiB", kib;
+    }'
+}
+
+bytes_to_human() {
+    awk -v bytes="${1:-0}" 'BEGIN {
+        kib = bytes / 1024;
+        mib = kib / 1024;
+        gib = mib / 1024;
+        tib = gib / 1024;
+        if (tib >= 1) printf "%.2f TiB", tib;
+        else if (gib >= 1) printf "%.2f GiB", gib;
+        else if (mib >= 1) printf "%.2f MiB", mib;
+        else if (kib >= 1) printf "%.2f KiB", kib;
+        else printf "%d B", bytes;
+    }'
+}
+
+format_uptime() {
+    local seconds="${1:-0}"
+    printf "%d days, %d hours, %d minutes" \
+        "$((seconds / 86400))" \
+        "$(((seconds % 86400) / 3600))" \
+        "$(((seconds % 3600) / 60))"
+}
+
+cpu_report() {
+    echo -e "\n# CPU"
+    if have nproc; then
+        field "CPU cores" "$(nproc)"
+    else
+        field "CPU cores" "(unknown)"
+    fi
+}
+
+memory_report() {
+    local total avail used
+    echo -e "\n# Memory"
+    total="$(awk '/^MemTotal:/ {print $2}' /proc/meminfo 2>/dev/null || echo 0)"
+    avail="$(awk '/^MemAvailable:/ {print $2}' /proc/meminfo 2>/dev/null || echo 0)"
+    used="$((total - avail))"
+    field "Total memory" "$(kib_to_human "$total")"
+    field "Used memory" "$(kib_to_human "$used")"
+}
+
+disk_report() {
+    local disk disk_names size mount avail used
+    echo -e "\n# Disk"
+    if ! have lsblk; then
+        echo "    lsblk is not available"
+        return 0
+    fi
+
+    disk_names="$(lsblk -d -n -o NAME,TYPE 2>/dev/null | awk '$2 == "disk" {print $1}')"
+    if [[ -z "$disk_names" ]]; then
+        echo "    No disks found"
+        return 0
+    fi
+
+    while IFS= read -r disk; do
+        [[ -n "$disk" ]] || continue
+        size="$(lsblk -b -d -n -o SIZE "/dev/$disk" 2>/dev/null || echo 0)"
+        mount="$(lsblk -nr -o MOUNTPOINT "/dev/$disk" 2>/dev/null | grep -m1 . || true)"
+        field "Disk" "/dev/$disk"
+        field "Size" "$(bytes_to_human "$size")"
+        if [[ -n "$mount" ]] && have df; then
+            avail="$(df -kP "$mount" 2>/dev/null | awk 'NR == 2 {print $4}' || echo 0)"
+            used="$(df -P "$mount" 2>/dev/null | awk 'NR == 2 {gsub("%", "", $5); print $5}' || echo 0)"
+            field "Mount point" "$mount"
+            field "Free space" "$(kib_to_human "$avail") ($((100 - used))%)"
+        else
+            field "Mount point" "${mount:-none}"
+        fi
+        echo
+    done <<< "$disk_names"
+}
+
+load_report() {
+    local load1 load5 load15 cpu_cores per_cpu trend
+    echo -e "\n# Load"
+    read -r load1 load5 load15 _ < /proc/loadavg 2>/dev/null || {
+        load1="0.00"; load5="0.00"; load15="0.00";
+    }
+    cpu_cores="$(nproc 2>/dev/null || echo 1)"
+    [[ "$cpu_cores" -gt 0 ]] || cpu_cores=1
+    per_cpu="$(awk -v load="$load1" -v cpu="$cpu_cores" 'BEGIN { printf "%.2f", load / cpu }')"
+    trend="$(awk -v l1="$load1" -v l5="$load5" -v l15="$load15" 'BEGIN {
+        if (l1 > l5 && l5 >= l15) print "increasing";
+        else if (l1 < l5 && l5 <= l15) print "decreasing";
+        else print "stable/mixed";
+    }')"
+    field "Load average (1m)" "$load1"
+    field "Load average (5m)" "$load5"
+    field "Load average (15m)" "$load15"
+    field "CPU cores" "$cpu_cores"
+    field "Load per CPU (1m)" "$per_cpu"
+    field "Trend" "$trend"
+}
+
+uptime_report() {
+    local seconds
+    echo -e "\n# Uptime"
+    seconds="$(cut -d'.' -f1 /proc/uptime 2>/dev/null | cut -d' ' -f1 || echo 0)"
+    field "Uptime" "$(format_uptime "$seconds")"
+}
+
+runtime_report() {
+    local virt="unknown"
+    local cgroup_fs="unknown"
+    local cgroup_mode="unknown"
+
+    echo -e "\n# Runtime"
+
+    if have systemd-detect-virt; then
+        virt="$(systemd-detect-virt 2>/dev/null || echo unknown)"
+    elif [[ -f /.dockerenv ]]; then
+        virt="docker"
+    fi
+
+    cgroup_fs="$(stat -fc %T /sys/fs/cgroup 2>/dev/null || echo unknown)"
+    if [[ -r /proc/self/cgroup ]]; then
+        if grep -q '^0::' /proc/self/cgroup 2>/dev/null; then
+            cgroup_mode="unified/v2"
+        else
+            cgroup_mode="legacy/v1 or hybrid"
+        fi
+    fi
+
+    field "Virtualization" "$virt"
+    field "Cgroup filesystem" "$cgroup_fs"
+    field "Cgroup mode" "$cgroup_mode"
+    field "Docker hint" "cgroupfs=cgroup2fs usually means cgroup v2"
+}
+
+network_report() {
+    local path iface oper ip_addr rx tx
+    echo -e "\n# Network"
+    if ! have ip; then
+        echo "    ip is not available"
+        return 0
+    fi
+    for path in /sys/class/net/*; do
+        [[ -e "$path" ]] || continue
+        iface="$(basename "$path")"
+        oper="$(cat "$path/operstate" 2>/dev/null || echo "unknown")"
+        ip_addr="$(ip -o -4 addr show dev "$iface" 2>/dev/null | awk '{print $4}' || echo "-")"
+        rx="$(cat "$path/statistics/rx_errors" 2>/dev/null || echo 0)"
+        tx="$(cat "$path/statistics/tx_errors" 2>/dev/null || echo 0)"
+        field "Interface" "$iface"
+        field "Status" "$oper"
+        field "IPv4" "${ip_addr:-"-"}"
+        field "Errors" "$((rx + tx))"
+        echo
+    done
+}
+
+ports_report() {
+    echo -e "\n# Listening TCP/UDP ports"
+    if have ss; then
+        ss -tupln 2>/dev/null | indent + 4 || echo "    Cannot read listening ports"
+    else
+        echo "    ss is not available"
+    fi
+}
+
+users_report() {
+    echo -e "\n# Users"
+    awk -F: '
+        BEGIN { printf "    %-17s %-7s %-28s %s\n", "USER", "UID", "HOME", "SHELL" }
+        $3 == 0 || ($3 >= 1000 && $1 != "nobody") {
+            printf "    %-17s uid=%-3s %-28s %s\n", $1, $3, $6, $7
+        }
+    ' /etc/passwd
+
+    echo
+    echo "    sudo/wheel members:"
+    {
+        getent group sudo 2>/dev/null
+        getent group wheel 2>/dev/null
+    } | awk -F: 'NF { printf "    %-8s %s\n", $1 ":", ($4 == "" ? "(none)" : $4) }'
+}
+
+mask_secrets() {
+    sed -E 's/^([^=]*(TOKEN|SECRET|PASSWORD|PASS|KEY|CREDENTIAL|PRIVATE|API_KEY|ACCESS_KEY)[^=]*)=.*/\1=***MASKED***/I'
+}
+
+docker_inspect_field() {
+    local target="$1"
+    local template="$2"
+    docker inspect -f "$template" "$target" 2>/dev/null || true
+}
+
+docker_report() {
+    echo -e "\n# Docker"
+    if ! have docker; then
+        echo "    Docker is not installed or not available"
+        return 0
+    fi
+
+    echo "    docker version:"
+    docker version --format '    Client={{.Client.Version}} Server={{.Server.Version}}' 2>/dev/null \
+        || docker version 2>/dev/null | indent + 4 \
+        || echo "    Cannot read docker version"
+
+    echo
+    echo "    containers:"
+    docker ps -a --format 'table {{.ID}}\t{{.Names}}\t{{.Image}}\t{{.Status}}\t{{.Ports}}' 2>/dev/null | indent + 4 \
+        || echo "    Cannot list containers"
+
+    echo
+    echo "    networks:"
+    docker network ls 2>/dev/null | indent + 4 || echo "    Cannot list networks"
+
+    echo
+    echo "    volumes:"
+    docker volume ls 2>/dev/null | indent + 4 || echo "    Cannot list volumes"
+}
+
+docker_container_report() {
+    local container="$1"
+    local image_id
+    local compose_project
+
+    echo -e "\n# Docker container: $container"
+    if ! have docker; then
+        echo "    Docker is not installed or not available"
+        return 0
+    fi
+    if ! docker inspect "$container" >/dev/null 2>&1; then
+        echo "    Container not found: $container"
+        return 1
+    fi
+
+    image_id="$(docker_inspect_field "$container" '{{.Image}}')"
+    compose_project="$(docker_inspect_field "$container" '{{index .Config.Labels "com.docker.compose.project"}}')"
+
+    echo
+    echo "    state:"
+    docker inspect -f '
+    Name:          {{.Name}}
+    Image:         {{.Config.Image}}
+    Status:        {{.State.Status}}
+    Running:       {{.State.Running}}
+    StartedAt:     {{.State.StartedAt}}
+    ExitCode:      {{.State.ExitCode}}
+    OOMKilled:     {{.State.OOMKilled}}
+    RestartCount:  {{.RestartCount}}
+    Health:        {{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}
+    ' "$container" 2>/dev/null
+
+    echo
+    echo "    command:"
+    docker inspect -f '
+    Entrypoint: {{json .Config.Entrypoint}}
+    Cmd:        {{json .Config.Cmd}}
+    WorkingDir: {{.Config.WorkingDir}}
+    User:       {{.Config.User}}
+    ' "$container" 2>/dev/null
+
+    echo
+    echo "    security:"
+    docker inspect -f '
+    Privileged:     {{.HostConfig.Privileged}}
+    ReadonlyRootfs: {{.HostConfig.ReadonlyRootfs}}
+    PidMode:        {{.HostConfig.PidMode}}
+    IpcMode:        {{.HostConfig.IpcMode}}
+    CgroupnsMode:   {{.HostConfig.CgroupnsMode}}
+    CapAdd:         {{json .HostConfig.CapAdd}}
+    CapDrop:        {{json .HostConfig.CapDrop}}
+    SecurityOpt:    {{json .HostConfig.SecurityOpt}}
+    ' "$container" 2>/dev/null
+
+    echo
+    echo "    resources:"
+    docker inspect -f '
+    Memory:     {{.HostConfig.Memory}}
+    MemorySwap: {{.HostConfig.MemorySwap}}
+    NanoCpus:   {{.HostConfig.NanoCpus}}
+    PidsLimit:  {{.HostConfig.PidsLimit}}
+    ' "$container" 2>/dev/null
+
+    echo
+    echo "    compose:"
+    field "Project" "${compose_project:-"-"}"
+    field "Service" "$(docker_inspect_field "$container" '{{index .Config.Labels "com.docker.compose.service"}}')"
+
+    echo
+    echo "    networks:"
+    docker inspect -f '{{range $name, $net := .NetworkSettings.Networks}}{{printf "    %-18s IP=%-16s Gateway=%-16s Mac=%s\n" $name $net.IPAddress $net.Gateway $net.MacAddress}}{{end}}' "$container" 2>/dev/null
+
+    echo
+    echo "    ports:"
+    docker port "$container" 2>/dev/null | indent + 4 || echo "    No published ports"
+
+    echo
+    echo "    mounts:"
+    docker inspect -f '{{range .Mounts}}{{printf "    Type=%s Source=%s Destination=%s RW=%v\n" .Type .Source .Destination .RW}}{{end}}' "$container" 2>/dev/null
+
+    echo
+    echo "    environment (secrets masked):"
+    docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' "$container" 2>/dev/null \
+        | mask_secrets \
+        | indent + 4
+
+    echo
+    echo "    process list:"
+    docker top "$container" 2>/dev/null | indent + 4 || echo "    Cannot read process list"
+
+    echo
+    echo "    resource usage:"
+    docker stats --no-stream "$container" 2>/dev/null | indent + 4 || echo "    Cannot read stats"
+
+    echo
+    echo "    filesystem diff:"
+    docker diff "$container" 2>/dev/null | indent + 4 || echo "    No diff or cannot read diff"
+
+    echo
+    echo "    rootfs layers:"
+    docker inspect -f '{{range .RootFS.Layers}}{{println .}}{{end}}' "$image_id" 2>/dev/null \
+        | sed '/^$/d' \
+        | nl -w1 -s'  ' \
+        | indent + 4 \
+        || echo "    Cannot read image layers"
+}
+
+run_reports() {
+    local ran=0
+
+    if (( ALL_REPORT )); then
+        snapshot
+        docker_report
+        return 0
+    fi
+
+    if (( CPU_REPORT )); then cpu_report; ran=1; fi
+    if (( MEMORY_REPORT )); then memory_report; ran=1; fi
+    if (( DISK_REPORT )); then disk_report; ran=1; fi
+    if (( LOAD_REPORT )); then load_report; ran=1; fi
+    if (( UPTIME_REPORT )); then uptime_report; ran=1; fi
+    if (( RUNTIME_REPORT )); then runtime_report; ran=1; fi
+    if (( NETWORK_REPORT )); then network_report; ran=1; fi
+    if (( PORTS_REPORT )); then ports_report; ran=1; fi
+    if (( USERS_REPORT )); then users_report; ran=1; fi
+    if (( DOCKER_REPORT )); then docker_report; ran=1; fi
+    if [[ -n "$DOCKER_CONTAINER" ]]; then docker_container_report "$DOCKER_CONTAINER"; ran=1; fi
+
+    [[ "$ran" -eq 1 ]]
 }
 
 # parse options
@@ -721,6 +1157,22 @@ while [[ $# -gt 0 ]]; do
             TOP_N=$2; shift 2;;
         -r|--dfreport) DFREPORT=1; shift;;
         -s|--snapshot) SNAPSHOT=1; shift;;
+        --all) ALL_REPORT=1; shift;;
+        --cpu) CPU_REPORT=1; shift;;
+        --memory) MEMORY_REPORT=1; shift;;
+        --disk) DISK_REPORT=1; shift;;
+        --load) LOAD_REPORT=1; shift;;
+        --uptime) UPTIME_REPORT=1; shift;;
+        --runtime) RUNTIME_REPORT=1; shift;;
+        --network) NETWORK_REPORT=1; shift;;
+        --ports) PORTS_REPORT=1; shift;;
+        --users) USERS_REPORT=1; shift;;
+        --docker) DOCKER_REPORT=1; shift;;
+        --docker-container)
+            if [[ -z "$2" ]]; then
+                echo "Error: --docker-container requires a container name or ID." >&2; usage
+            fi
+            DOCKER_CONTAINER="$2"; shift 2;;
         -z|--size) SHOW_SIZE=1; shift;;
         -h|--help) usage;;
 
@@ -733,6 +1185,10 @@ done
 # snapshot mode
 if (( SNAPSHOT )); then
     snapshot; exit 0
+fi
+
+if run_reports; then
+    exit 0
 fi
 
 # determine target mode
