@@ -462,6 +462,17 @@ snapshot() {
             echo "Memory: $USED_MEM/$TOTAL_MEM"
     } | indent + 4
 
+    cpu_report
+    memory_report
+    disk_report
+    load_report
+    time_report
+    uptime_report
+    network_report
+    ports_report
+    users_report
+    docker_report
+
     # Users & Home directory trees
     echo -e "\n# Users & Home directory trees"
     {
@@ -807,7 +818,7 @@ memory_report() {
 }
 
 disk_report() {
-    local disk disk_names size mount avail used
+    local disk disk_names size mount avail used read_ops write_ops io_time_ms errs
     echo -e "\n# Disk"
     if ! have lsblk; then
         echo "    lsblk is not available"
@@ -834,30 +845,117 @@ disk_report() {
         else
             field "Mount point" "${mount:-none}"
         fi
+
+        echo
+        echo "    I/O activity:"
+        read -r read_ops write_ops io_time_ms < <(disk_activity_delta "$disk")
+        field "Read ops" "$read_ops"
+        field "Write ops" "$write_ops"
+        field "I/O time delta" "${io_time_ms} ms"
+
+        echo
+        echo "    Kernel messages:"
+        errs="$(disk_kernel_error_matches "$disk")"
+        field "Kernel log matches" "$errs"
         echo
     done <<< "$disk_names"
 }
 
+disk_read_stats() {
+    local disk="${1:-}"
+    [[ -z "$disk" ]] && return 1
+
+    awk -v target="$disk" '
+        $3 == target {
+            print $4, $8, $13
+            found=1
+            exit
+        }
+        END {
+            if (!found) exit 1
+        }
+    ' /proc/diskstats
+}
+
+disk_activity_delta() {
+    local disk="${1:-}"
+    local r1 w1 io1 r2 w2 io2
+
+    [[ -z "$disk" ]] && {
+        echo "0 0 0"
+        return 0
+    }
+
+    read -r r1 w1 io1 < <(disk_read_stats "$disk" 2>/dev/null) || {
+        echo "0 0 0"
+        return 0
+    }
+
+    sleep 1
+
+    read -r r2 w2 io2 < <(disk_read_stats "$disk" 2>/dev/null) || {
+        echo "0 0 0"
+        return 0
+    }
+
+    printf "%s %s %s\n" "$((r2 - r1))" "$((w2 - w1))" "$((io2 - io1))"
+}
+
+disk_kernel_error_matches() {
+    local disk="${1:-}"
+    local pattern count
+
+    [[ -z "$disk" ]] && {
+        echo "0"
+        return 0
+    }
+
+    if ! dmesg >/dev/null 2>&1; then
+        echo "N/A"
+        return 0
+    fi
+
+    pattern="\\b${disk}\\b.*(I/O error|error|fail|critical|medium error|blk_update_request)"
+    count="$(dmesg 2>/dev/null | grep -iEc "$pattern" || true)"
+    echo "${count:-0}"
+}
+
 load_report() {
-    local load1 load5 load15 cpu_cores per_cpu trend
+    local load1 load5 load15 cpu_cores per_cpu1 per_cpu5 per_cpu15 trend interpretation
     echo -e "\n# Load"
     read -r load1 load5 load15 _ < /proc/loadavg 2>/dev/null || {
         load1="0.00"; load5="0.00"; load15="0.00";
     }
     cpu_cores="$(nproc 2>/dev/null || echo 1)"
     [[ "$cpu_cores" -gt 0 ]] || cpu_cores=1
-    per_cpu="$(awk -v load="$load1" -v cpu="$cpu_cores" 'BEGIN { printf "%.2f", load / cpu }')"
+    per_cpu1="$(awk -v load="$load1" -v cpu="$cpu_cores" 'BEGIN { printf "%.2f", load / cpu }')"
+    per_cpu5="$(awk -v load="$load5" -v cpu="$cpu_cores" 'BEGIN { printf "%.2f", load / cpu }')"
+    per_cpu15="$(awk -v load="$load15" -v cpu="$cpu_cores" 'BEGIN { printf "%.2f", load / cpu }')"
     trend="$(awk -v l1="$load1" -v l5="$load5" -v l15="$load15" 'BEGIN {
         if (l1 > l5 && l5 >= l15) print "increasing";
         else if (l1 < l5 && l5 <= l15) print "decreasing";
         else print "stable/mixed";
     }')"
+    interpretation="$(awk -v l1="$load1" -v cpu="$cpu_cores" 'BEGIN {
+        if (l1 < cpu * 0.7) print "low demand relative to CPU count";
+        else if (l1 < cpu) print "moderate demand relative to CPU count";
+        else print "high demand relative to CPU count";
+    }')"
     field "Load average (1m)" "$load1"
     field "Load average (5m)" "$load5"
     field "Load average (15m)" "$load15"
     field "CPU cores" "$cpu_cores"
-    field "Load per CPU (1m)" "$per_cpu"
+    field "Load per CPU (1m)" "$per_cpu1"
+    field "Load per CPU (5m)" "$per_cpu5"
+    field "Load per CPU (15m)" "$per_cpu15"
     field "Trend" "$trend"
+    field "Interpretation" "$interpretation"
+    field "Note" "load includes runnable tasks and uninterruptible wait"
+}
+
+time_report() {
+    echo -e "\n# Time"
+    field "Current time" "$(date '+%Y-%m-%d %H:%M:%S %Z')"
 }
 
 uptime_report() {
@@ -929,18 +1027,63 @@ ports_report() {
 users_report() {
     echo -e "\n# Users"
     awk -F: '
-        BEGIN { printf "    %-17s %-7s %-28s %s\n", "USER", "UID", "HOME", "SHELL" }
-        $3 == 0 || ($3 >= 1000 && $1 != "nobody") {
-            printf "    %-17s uid=%-3s %-28s %s\n", $1, $3, $6, $7
+        function print_user() {
+            printf "%-17s uid=%-5s home=%-28s shell=%s\n", $1, $3, $6, $7
+        }
+        $3 < 1000 && $3 != 0 {
+            system_users[++system_count] = $0
+        }
+        $3 == 0 {
+            root_users[++root_count] = $0
+        }
+        $3 >= 1000 && $1 != "nobody" {
+            regular_users[++regular_count] = $0
+        }
+        END {
+            print "";
+            print "System users:";
+            if (system_count == 0) print "none";
+            for (i = 1; i <= system_count; i++) {
+                split(system_users[i], f, ":");
+                printf "%-17s uid=%-5s home=%-28s shell=%s\n", f[1], f[3], f[6], f[7]
+            }
+
+            print "";
+            print "Root users:";
+            if (root_count == 0) print "none";
+            for (i = 1; i <= root_count; i++) {
+                split(root_users[i], f, ":");
+                printf "%-17s uid=%-5s home=%-28s shell=%s\n", f[1], f[3], f[6], f[7]
+            }
+
+            print "";
+            print "Regular users:";
+            if (regular_count == 0) print "none";
+            for (i = 1; i <= regular_count; i++) {
+                split(regular_users[i], f, ":");
+                printf "%-17s uid=%-5s home=%-28s shell=%s\n", f[1], f[3], f[6], f[7]
+            }
         }
     ' /etc/passwd
 
     echo
-    echo "    sudo/wheel members:"
-    {
-        getent group sudo 2>/dev/null
-        getent group wheel 2>/dev/null
-    } | awk -F: 'NF { printf "    %-8s %s\n", $1 ":", ($4 == "" ? "(none)" : $4) }'
+    echo "Group-based sudo users:"
+    if have getent; then
+        local sudo_members wheel_members
+        sudo_members="$(getent group sudo 2>/dev/null | awk -F: '{print $4}')"
+        wheel_members="$(getent group wheel 2>/dev/null | awk -F: '{print $4}')"
+        if [[ -n "$sudo_members" ]]; then
+            echo "from sudo: $sudo_members"
+        fi
+        if [[ -n "$wheel_members" ]]; then
+            echo "from wheel: $wheel_members"
+        fi
+        if [[ -z "$sudo_members" && -z "$wheel_members" ]]; then
+            echo "none"
+        fi
+    else
+        echo "getent not found"
+    fi
 }
 
 mask_secrets() {
@@ -1091,7 +1234,6 @@ run_reports() {
 
     if (( ALL_REPORT )); then
         snapshot
-        docker_report
         return 0
     fi
 
