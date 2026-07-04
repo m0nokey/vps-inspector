@@ -48,6 +48,11 @@ Quickly check system status, search files, or audit packages — all with one co
   * NAT rules (iptables/ip6tables)
   * Docker containers (if installed)
   * Package install/upgrade history (`/var/log/dpkg.log*`)
+* Optional focused reports:
+  * CPU, memory, disk, load, uptime, network, ports, and users
+  * Runtime hints: virtualization and cgroup mode/filesystem
+  * Docker host overview when Docker is available
+  * Deep Docker container snapshot by container name or ID
 
 ## Usage
 No installation, no extra packages needed — run any audit/check/search directly from your shell with one line:
@@ -145,6 +150,21 @@ abc123         ubuntu:20.04   "/bin/bash" Up 2h     web
 # package install/upgrade history
 date       time    action  package arch   old_version new_version  status
 2025-06-20 12:00   install vim     amd64  2:0.8.0    2:0.8.1       + 
+```
+
+### Get a full snapshot with optional Docker overview:
+```bash
+curl -sSfL --tlsv1.3 --http2 --proto '=https' "https://raw.githubusercontent.com/m0nokey/vps-inspector/main/vps-inspector.sh" | bash -s -- --all
+```
+
+### Check Docker when available:
+```bash
+curl -sSfL --tlsv1.3 --http2 --proto '=https' "https://raw.githubusercontent.com/m0nokey/vps-inspector/main/vps-inspector.sh" | bash -s -- --docker
+```
+
+### Inspect one Docker container:
+```bash
+curl -sSfL --tlsv1.3 --http2 --proto '=https' "https://raw.githubusercontent.com/m0nokey/vps-inspector/main/vps-inspector.sh" | bash -s -- --docker-container nginx
 ```
 
 ### Check pkg paths:
