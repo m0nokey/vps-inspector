@@ -556,44 +556,6 @@ snapshot() {
         fi
     } | indent + 4
 
-    echo -e "\n# Block devices"
-    {
-        if have lsblk; then
-            lsblk -d -o NAME,SIZE,TYPE,MODEL
-        else
-            echo "lsblk not found"
-        fi
-    } | indent + 4
-
-    echo -e "\n# Filesystems & partitions"
-    {
-        if have lsblk; then
-            lsblk -o NAME,SIZE,FSTYPE,MOUNTPOINT
-        else
-            echo "lsblk not found"
-        fi
-    } | indent + 4
-
-    echo -e "\n# Disk usage warnings (>90%)"
-    {
-        mapfile -t DF_WARN < <(df -h | awk '$5+0>90{print "WARN:", $0}')
-        if (( ${#DF_WARN[@]} )); then
-            printf "%s\n" "${DF_WARN[@]}"
-        else
-            echo "(none)"
-        fi
-    } | indent + 4
-
-    echo -e "\n# Inode usage warnings (>90%)"
-    {
-        mapfile -t INO_WARN < <(df -i | awk '$5+0>90{print "WARN: inode usage high:", $0}')
-        if (( ${#INO_WARN[@]} )); then
-            printf "%s\n" "${INO_WARN[@]}"
-        else
-            echo "(none)"
-        fi
-    } | indent + 4
-
     echo -e "\n# Top 10 largest logs"
     {
         du -sh /var/log/* 2>/dev/null | sort -hr | head -n 10 | awk '{size=$1; $1=""; sub(/^ */, ""); printf "%-8s %s\n", size, $0}'
@@ -795,46 +757,95 @@ memory_report() {
 
 disk_report() {
     local disk disk_names size mount avail used read_ops write_ops io_time_ms errs
+    local -a df_warn=()
+    local -a ino_warn=()
+
     echo -e "\n# Disk"
-    if ! have lsblk; then
-        echo "    lsblk is not available"
-        return 0
+
+    if have lsblk; then
+        disk_names="$(lsblk -d -n -o NAME,TYPE 2>/dev/null | awk '$2 == "disk" {print $1}')"
+    else
+        disk_names=""
     fi
 
-    disk_names="$(lsblk -d -n -o NAME,TYPE 2>/dev/null | awk '$2 == "disk" {print $1}')"
     if [[ -z "$disk_names" ]]; then
-        echo "    No disks found"
-        return 0
+        if have lsblk; then
+            echo "    No disks found"
+        else
+            echo "    lsblk is not available"
+        fi
+    else
+        while IFS= read -r disk; do
+            [[ -n "$disk" ]] || continue
+            size="$(lsblk -b -d -n -o SIZE "/dev/$disk" 2>/dev/null || echo 0)"
+            mount="$(lsblk -nr -o MOUNTPOINT "/dev/$disk" 2>/dev/null | grep -m1 . || true)"
+            field "Disk" "/dev/$disk"
+            field "Size" "$(bytes_to_human "$size")"
+            if [[ -n "$mount" ]] && have df; then
+                avail="$(df -kP "$mount" 2>/dev/null | awk 'NR == 2 {print $4}' || echo 0)"
+                used="$(df -P "$mount" 2>/dev/null | awk 'NR == 2 {gsub("%", "", $5); print $5}' || echo 0)"
+                field "Mount point" "$mount"
+                field "Free space" "$(kib_to_human "$avail") ($((100 - used))%)"
+            else
+                field "Mount point" "${mount:-none}"
+            fi
+
+            echo
+            echo "    I/O activity:"
+            read -r read_ops write_ops io_time_ms < <(disk_activity_delta "$disk")
+            field "Read ops" "$read_ops"
+            field "Write ops" "$write_ops"
+            field "I/O time delta" "${io_time_ms} ms"
+
+            echo
+            echo "    Kernel messages:"
+            errs="$(disk_kernel_error_matches "$disk")"
+            field "Kernel log matches" "$errs"
+            echo
+        done <<< "$disk_names"
     fi
 
-    while IFS= read -r disk; do
-        [[ -n "$disk" ]] || continue
-        size="$(lsblk -b -d -n -o SIZE "/dev/$disk" 2>/dev/null || echo 0)"
-        mount="$(lsblk -nr -o MOUNTPOINT "/dev/$disk" 2>/dev/null | grep -m1 . || true)"
-        field "Disk" "/dev/$disk"
-        field "Size" "$(bytes_to_human "$size")"
-        if [[ -n "$mount" ]] && have df; then
-            avail="$(df -kP "$mount" 2>/dev/null | awk 'NR == 2 {print $4}' || echo 0)"
-            used="$(df -P "$mount" 2>/dev/null | awk 'NR == 2 {gsub("%", "", $5); print $5}' || echo 0)"
-            field "Mount point" "$mount"
-            field "Free space" "$(kib_to_human "$avail") ($((100 - used))%)"
+    echo
+    echo "    Block devices:"
+    if have lsblk; then
+        lsblk -d -o NAME,SIZE,TYPE,MODEL 2>/dev/null | indent + 4
+    else
+        echo "    lsblk not found"
+    fi
+
+    echo
+    echo "    Filesystems & partitions:"
+    if have lsblk; then
+        lsblk -o NAME,SIZE,FSTYPE,MOUNTPOINT 2>/dev/null | indent + 4
+    else
+        echo "    lsblk not found"
+    fi
+
+    echo
+    echo "    Disk usage warnings (>90%):"
+    if have df; then
+        mapfile -t df_warn < <(df -h | awk '$5+0>90{print "WARN:", $0}')
+        if (( ${#df_warn[@]} )); then
+            printf "%s\n" "${df_warn[@]}" | indent + 4
         else
-            field "Mount point" "${mount:-none}"
+            echo "    (none)"
         fi
+    else
+        echo "    df not found"
+    fi
 
-        echo
-        echo "    I/O activity:"
-        read -r read_ops write_ops io_time_ms < <(disk_activity_delta "$disk")
-        field "Read ops" "$read_ops"
-        field "Write ops" "$write_ops"
-        field "I/O time delta" "${io_time_ms} ms"
-
-        echo
-        echo "    Kernel messages:"
-        errs="$(disk_kernel_error_matches "$disk")"
-        field "Kernel log matches" "$errs"
-        echo
-    done <<< "$disk_names"
+    echo
+    echo "    Inode usage warnings (>90%):"
+    if have df; then
+        mapfile -t ino_warn < <(df -i | awk '$5+0>90{print "WARN: inode usage high:", $0}')
+        if (( ${#ino_warn[@]} )); then
+            printf "%s\n" "${ino_warn[@]}" | indent + 4
+        else
+            echo "    (none)"
+        fi
+    else
+        echo "    df not found"
+    fi
 }
 
 disk_read_stats() {
