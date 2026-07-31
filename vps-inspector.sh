@@ -647,6 +647,10 @@ format_uptime() {
         "$(((seconds % 3600) / 60))"
 }
 
+cpu_field() {
+    printf "    %-24s %s\n" "$1:" "$2"
+}
+
 cpu_metrics() {
     local before after
     local user nice system idle iowait irq softirq steal
@@ -654,9 +658,9 @@ cpu_metrics() {
     local user_pct nice_pct system_pct idle_pct iowait_pct irq_pct
     local softirq_pct steal_pct
     if have nproc; then
-        field "CPU cores" "$(nproc)"
+        cpu_field "CPU cores" "$(nproc)"
     else
-        field "CPU cores" "(unknown)"
+        cpu_field "CPU cores" "(unknown)"
     fi
 
     if [[ -r /proc/stat ]]; then
@@ -683,16 +687,16 @@ cpu_metrics() {
                 }
             '
         )
-        field "User time" "${user_pct:-0.0}%"
-        field "System time" "${system_pct:-0.0}%"
-        field "Nice process time" "${nice_pct:-0.0}%"
-        field "Idle time" "${idle_pct:-0.0}%"
-        field "I/O wait time" "${iowait_pct:-0.0}%"
-        field "Hardware interrupt time" "${irq_pct:-0.0}%"
-        field "Software interrupt time" "${softirq_pct:-0.0}%"
-        field "Steal time" "${steal_pct:-0.0}%"
+        cpu_field "User time" "${user_pct:-0.0}%"
+        cpu_field "System time" "${system_pct:-0.0}%"
+        cpu_field "Nice process time" "${nice_pct:-0.0}%"
+        cpu_field "Idle time" "${idle_pct:-0.0}%"
+        cpu_field "I/O wait time" "${iowait_pct:-0.0}%"
+        cpu_field "Hardware interrupt time" "${irq_pct:-0.0}%"
+        cpu_field "Software interrupt time" "${softirq_pct:-0.0}%"
+        cpu_field "Steal time" "${steal_pct:-0.0}%"
     else
-        field "CPU timing" " /proc/stat unavailable"
+        cpu_field "CPU timing" " /proc/stat unavailable"
     fi
 }
 
