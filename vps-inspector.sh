@@ -422,7 +422,7 @@ parse_tree() {
 
 # quick system snapshot
 snapshot() {
-    echo -e "# System snapshot"
+    echo -e "# System"
     {
         if [[ -r /etc/os-release ]]; then
             . /etc/os-release
@@ -457,17 +457,31 @@ snapshot() {
                 fi
             fi
 
+            echo "Current time: $(date '+%Y-%m-%d %H:%M:%S %Z')"
+            UPTIME_SECONDS="$(cut -d'.' -f1 /proc/uptime 2>/dev/null | cut -d' ' -f1 || echo 0)"
+            echo "Uptime: $(format_uptime "$UPTIME_SECONDS")"
+
     } | indent + 4
 
-    cpu_report
-    memory_report
-    uptime_report
-    load_report
-    tasks_report
-    time_report
-    disk_report
-    network_report
-    ports_report
+    echo -e "\n# Compute"
+    echo "    CPU:"
+    cpu_metrics | indent + 4
+    echo
+    echo "    Load:"
+    load_metrics | indent + 4
+    echo
+    echo "    Tasks and processes:"
+    tasks_metrics | indent + 4
+    echo
+    echo "    Top 10 by %MEM:"
+    top_memory_processes | indent + 4
+
+    echo -e "\n# Memory"
+    memory_metrics
+
+    echo -e "\n# Storage"
+    disk_metrics
+    network_snapshot
     users_report
 
     # Users & Home directory trees
@@ -546,17 +560,6 @@ snapshot() {
         fi
     } | indent + 4
 
-    echo -e "\n# Top 10 by %MEM"
-    {
-        if ps aux --sort=-%mem >/dev/null 2>&1; then
-            ps aux --sort=-%mem | head -n 11
-        elif ps aux >/dev/null 2>&1; then
-            ps aux | head -n 11
-        else
-            ps 2>/dev/null | head -n 11 || echo "ps output unavailable"
-        fi
-    } | indent + 4
-
     echo -e "\n# Top 10 largest logs"
     {
         du -sh /var/log/* 2>/dev/null | sort -hr | head -n 10 | awk '{size=$1; $1=""; sub(/^ */, ""); printf "%-8s %s\n", size, $0}'
@@ -578,110 +581,6 @@ snapshot() {
         mapfile -t ZOMBIES < <(ps -ef | awk '$8=="Z"')
         if (( ${#ZOMBIES[@]} )); then
             printf "%s\n" "${ZOMBIES[@]}"
-        else
-            echo "(none)"
-        fi
-    } | indent + 4
-
-    #  network & DNS Information
-    ## interface details
-    echo -e "\n# Interface details"
-    {
-        local PRIMARY_IFACE=""
-        local IPV4_ADDR=""
-        local IPV6_ADDR=""
-        local GATEWAY=""
-        local IPV6_GATEWAY=""
-        if have ip; then
-            PRIMARY_IFACE="$(ip route 2>/dev/null | awk '/^default/ {print $5; exit}')"
-            if [[ -n "$PRIMARY_IFACE" ]]; then
-                IPV4_ADDR="$(ip -4 addr show "$PRIMARY_IFACE" 2>/dev/null | awk '/inet / { sub(/\/.*/, "", $2); print $2; exit }')"
-                IPV6_ADDR="$(ip -6 addr show "$PRIMARY_IFACE" 2>/dev/null \
-                    | awk '$1 == "inet6" {print $2; exit}')"
-            fi
-            GATEWAY="$(ip route 2>/dev/null | awk '/^default/ {print $3; exit}')"
-            IPV6_GATEWAY="$(ip -6 route 2>/dev/null | awk '/^default/ {print $3; exit}')"
-        fi
-        echo "Primary interface:   $PRIMARY_IFACE"
-        echo "IPv4 address:        $IPV4_ADDR"
-        echo "IPv6 address:        ${IPV6_ADDR:-"-"}"
-        echo "Gateway:             $GATEWAY"
-        echo "IPv6 gateway:        ${IPV6_GATEWAY:-"-"}"
-    } | indent + 4
-
-    ## DNS resolver
-    echo -e "\n# DNS resolver"
-    {
-        local DNS_RESOLVER="none detected"
-        if have systemctl; then
-            for SVC in systemd-resolved unbound bind9 dnsmasq cloudflared adguardhome; do
-                if systemctl is-active --quiet "$SVC"; then
-                    case "$SVC" in
-                        systemd-resolved) DNS_RESOLVER="systemd-resolved" ;;
-                        unbound)          DNS_RESOLVER="Unbound" ;;
-                        bind9)            DNS_RESOLVER="BIND9" ;;
-                        dnsmasq)          DNS_RESOLVER="dnsmasq" ;;
-                        cloudflared)      DNS_RESOLVER="cloudflared (DoH proxy)" ;;
-                        adguardhome)      DNS_RESOLVER="AdGuard Home" ;;
-                    esac
-                    break
-                fi
-            done
-        fi
-        echo "Resolver service:   $DNS_RESOLVER"
-    } | indent + 4
-
-    ## nameservers
-    echo -e "\n# Nameservers"
-    {
-        awk '/^nameserver/ { printf("    %s\n", $2) }' /etc/resolv.conf
-    } | indent + 4
-
-    ## routes
-    echo -e "\n# Routes"
-    {
-        if have ip; then
-            local IPV6_ROUTES=""
-            echo "IPv4 routes:"
-            ip route 2>/dev/null | indent + 4 || echo "    routes unavailable"
-            echo
-            echo "IPv6 routes:"
-            IPV6_ROUTES="$(ip -6 route 2>/dev/null || true)"
-            if [[ -n "$IPV6_ROUTES" ]]; then
-                printf '%s\n' "$IPV6_ROUTES" | indent + 4
-            else
-                echo "    (none)"
-            fi
-        else
-            echo "ip not found"
-        fi
-    } | indent + 4
-
-    # IPv4 NAT table & rules
-    echo -e "\n# IPv4 NAT table & rules"
-    {
-        if command -v iptables-save &>/dev/null; then
-            iptables-save -t nat
-        elif command -v iptables &>/dev/null; then
-            for CHAIN in PREROUTING INPUT OUTPUT POSTROUTING; do
-                echo "--- $CHAIN ---"
-                iptables -t nat -L "$CHAIN" -n -v --line-numbers
-            done
-        else
-            echo "(none)"
-        fi
-    } | indent + 4
-    
-    # IPv6 NAT table & rules
-    echo -e "\n# IPv6 NAT table & rules"
-    {
-        if command -v ip6tables-save &>/dev/null; then
-            ip6tables-save -t nat
-        elif command -v ip6tables &>/dev/null; then
-            for CHAIN in PREROUTING INPUT OUTPUT POSTROUTING; do
-                echo "--- $CHAIN ---"
-                ip6tables -t nat -L "$CHAIN" -n -v --line-numbers
-            done
         else
             echo "(none)"
         fi
@@ -754,13 +653,12 @@ format_uptime() {
         "$(((seconds % 3600) / 60))"
 }
 
-cpu_report() {
+cpu_metrics() {
     local before after
     local user nice system idle iowait irq softirq steal
     local user2 nice2 system2 idle2 iowait2 irq2 softirq2 steal2
     local user_pct nice_pct system_pct idle_pct iowait_pct irq_pct
     local softirq_pct steal_pct
-    echo -e "\n# CPU"
     if have nproc; then
         field "CPU cores" "$(nproc)"
     else
@@ -804,9 +702,13 @@ cpu_report() {
     fi
 }
 
-memory_report() {
+cpu_report() {
+    echo -e "\n# CPU"
+    cpu_metrics
+}
+
+memory_metrics() {
     local total free buffers cached avail used swap_total swap_free swap_used
-    echo -e "\n# Memory"
     total="$(awk '/^MemTotal:/ {print $2}' /proc/meminfo 2>/dev/null || echo 0)"
     free="$(awk '/^MemFree:/ {print $2}' /proc/meminfo 2>/dev/null || echo 0)"
     buffers="$(awk '/^Buffers:/ {print $2}' /proc/meminfo 2>/dev/null || echo 0)"
@@ -827,10 +729,13 @@ memory_report() {
     field "Swap used" "$(kib_to_human "$swap_used")"
 }
 
-tasks_report() {
-    local total running sleeping stopped zombie
-    echo -e "\n# Tasks"
+memory_report() {
+    echo -e "\n# Memory"
+    memory_metrics
+}
 
+tasks_metrics() {
+    local total running sleeping stopped zombie
     if ! have ps; then
         field "Process statistics" "ps is not available"
         return 0
@@ -857,12 +762,27 @@ tasks_report() {
     field "Zombie" "${zombie:-0}"
 }
 
-disk_report() {
+tasks_report() {
+    echo -e "\n# Tasks"
+    tasks_metrics
+}
+
+top_memory_processes() {
+    if ps aux --sort=-%mem >/dev/null 2>&1; then
+        ps aux --sort=-%mem | head -n 11
+    elif ps aux >/dev/null 2>&1; then
+        ps aux | head -n 11
+    else
+        ps 2>/dev/null | head -n 11 || echo "ps output unavailable"
+    fi
+}
+
+disk_metrics() {
     local disk disk_names size mount avail used read_ops write_ops io_time_ms errs
     local -a df_warn=()
     local -a ino_warn=()
 
-    echo -e "\n# Disk"
+    echo "    Devices and filesystems:"
 
     if have lsblk; then
         disk_names="$(lsblk -d -n -o NAME,TYPE 2>/dev/null | awk '$2 == "disk" {print $1}')"
@@ -1009,9 +929,8 @@ disk_kernel_error_matches() {
     echo "${count:-0}"
 }
 
-load_report() {
+load_metrics() {
     local load1 load5 load15 cpu_cores per_cpu1 per_cpu5 per_cpu15 trend interpretation
-    echo -e "\n# Load"
     read -r load1 load5 load15 _ < /proc/loadavg 2>/dev/null || {
         load1="0.00"; load5="0.00"; load15="0.00";
     }
@@ -1040,6 +959,11 @@ load_report() {
     field "Trend" "$trend"
     field "Interpretation" "$interpretation"
     field "Note" "load includes runnable tasks and uninterruptible wait"
+}
+
+load_report() {
+    echo -e "\n# Load"
+    load_metrics
 }
 
 time_report() {
@@ -1107,8 +1031,123 @@ network_report() {
     done
 }
 
-ports_report() {
-    echo -e "\n# Listening TCP/UDP ports"
+network_snapshot() {
+    local primary_iface ipv4_addr ipv6_addr gateway ipv6_gateway
+    local dns_resolver path iface oper ip_addr ip6_addr rx tx
+    local ipv6_routes
+
+    echo -e "\n# Network"
+    echo "    Network summary:"
+    primary_iface="$(ip route 2>/dev/null | awk '/^default/ {print $5; exit}')"
+    ipv4_addr=""
+    ipv6_addr=""
+    gateway="$(ip route 2>/dev/null | awk '/^default/ {print $3; exit}')"
+    ipv6_gateway="$(ip -6 route 2>/dev/null | awk '/^default/ {print $3; exit}')"
+    if [[ -n "$primary_iface" ]]; then
+        ipv4_addr="$(ip -4 addr show "$primary_iface" 2>/dev/null \
+            | awk '/inet / {print $2; exit}')"
+        ipv6_addr="$(ip -6 addr show "$primary_iface" 2>/dev/null \
+            | awk '$1 == "inet6" {print $2; exit}')"
+    fi
+    [[ -n "$primary_iface" ]] || primary_iface="-"
+    [[ -n "$ipv4_addr" ]] || ipv4_addr="-"
+    [[ -n "$gateway" ]] || gateway="-"
+    [[ -n "$ipv6_addr" ]] || ipv6_addr="-"
+    [[ -n "$ipv6_gateway" ]] || ipv6_gateway="-"
+    printf "        Primary interface:       %s\n" "$primary_iface"
+    printf "        IPv4 address:             %s\n" "$ipv4_addr"
+    printf "        IPv4 default gateway:     %s\n" "$gateway"
+    printf "        IPv6 address:             %s\n" "$ipv6_addr"
+    printf "        IPv6 default gateway:     %s\n" "$ipv6_gateway"
+
+    echo
+    echo "    Interfaces:"
+    printf "        %-18s %-9s %-18s %-45s %s\n" \
+        "INTERFACE" "STATUS" "IPv4" "IPv6" "ERRORS"
+    for path in /sys/class/net/*; do
+        [[ -e "$path" ]] || continue
+        iface="$(basename "$path")"
+        oper="$(cat "$path/operstate" 2>/dev/null || echo unknown)"
+        ip_addr="$(ip -o -4 addr show dev "$iface" 2>/dev/null \
+            | awk '{if (n++) printf ", "; printf "%s", $4}')"
+        ip6_addr="$(ip -o -6 addr show dev "$iface" 2>/dev/null \
+            | awk '{if (n++) printf ", "; printf "%s", $4}')"
+        rx="$(cat "$path/statistics/rx_errors" 2>/dev/null || echo 0)"
+        tx="$(cat "$path/statistics/tx_errors" 2>/dev/null || echo 0)"
+        [[ -n "$ip_addr" ]] || ip_addr="-"
+        [[ -n "$ip6_addr" ]] || ip6_addr="-"
+        printf "        %-18s %-9s %-18s %-45s %s\n" \
+            "$iface" "$oper" "$ip_addr" "$ip6_addr" "$((rx + tx))"
+    done
+
+    echo
+    echo "    DNS:"
+    dns_resolver="none detected"
+    if have systemctl; then
+        for SVC in systemd-resolved unbound bind9 dnsmasq cloudflared adguardhome; do
+            if systemctl is-active --quiet "$SVC"; then
+                case "$SVC" in
+                    systemd-resolved) dns_resolver="systemd-resolved" ;;
+                    unbound)          dns_resolver="Unbound" ;;
+                    bind9)            dns_resolver="BIND9" ;;
+                    dnsmasq)          dns_resolver="dnsmasq" ;;
+                    cloudflared)      dns_resolver="cloudflared (DoH proxy)" ;;
+                    adguardhome)      dns_resolver="AdGuard Home" ;;
+                esac
+                break
+            fi
+        done
+    fi
+    printf "        Resolver service:         %s\n" "$dns_resolver"
+    echo "        Nameservers:"
+    awk '/^nameserver/ {printf "            %s\n", $2}' /etc/resolv.conf
+
+    echo
+    echo "    IPv4 routes:"
+    ip route 2>/dev/null | sed 's/^/        /' || echo "        routes unavailable"
+    echo
+    echo "    IPv6 routes:"
+    ipv6_routes="$(ip -6 route 2>/dev/null || true)"
+    if [[ -n "$ipv6_routes" ]]; then
+        printf '%s\n' "$ipv6_routes" | sed 's/^/        /'
+    else
+        echo "        (none)"
+    fi
+
+    echo
+    echo "    Listening TCP/UDP ports:"
+    ports_metrics | sed 's/^/    /'
+
+    echo -e "\n# IPv4 NAT table & rules"
+    {
+        if command -v iptables-save &>/dev/null; then
+            iptables-save -t nat
+        elif command -v iptables &>/dev/null; then
+            for CHAIN in PREROUTING INPUT OUTPUT POSTROUTING; do
+                echo "--- $CHAIN ---"
+                iptables -t nat -L "$CHAIN" -n -v --line-numbers
+            done
+        else
+            echo "(none)"
+        fi
+    } | indent + 4
+
+    echo -e "\n# IPv6 NAT table & rules"
+    {
+        if command -v ip6tables-save &>/dev/null; then
+            ip6tables-save -t nat
+        elif command -v ip6tables &>/dev/null; then
+            for CHAIN in PREROUTING INPUT OUTPUT POSTROUTING; do
+                echo "--- $CHAIN ---"
+                ip6tables -t nat -L "$CHAIN" -n -v --line-numbers
+            done
+        else
+            echo "(none)"
+        fi
+    } | indent + 4
+}
+
+ports_metrics() {
     if have ss; then
         {
             printf "%-6s %-8s %-6s %-6s %-30s %-22s %s\n" \
@@ -1121,8 +1160,13 @@ ports_report() {
                         process = $7
                         for (i = 8; i <= NF; i++) {
                             process = process " " $i
-                        }
-                    }
+    }
+}
+
+disk_report() {
+    echo -e "\n# Disk"
+    disk_metrics
+}
 
                     printf "%-6s %-8s %-6s %-6s %-30s %-22s %s\n",
                         $1, $2, $3, $4, $5, $6, process
@@ -1132,6 +1176,11 @@ ports_report() {
     else
         echo "    ss is not available"
     fi
+}
+
+ports_report() {
+    echo -e "\n# Listening TCP/UDP ports"
+    ports_metrics
 }
 
 users_report() {
