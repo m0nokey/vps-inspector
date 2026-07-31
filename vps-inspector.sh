@@ -463,6 +463,7 @@ snapshot() {
     memory_report
     uptime_report
     load_report
+    tasks_report
     time_report
     disk_report
     network_report
@@ -588,17 +589,24 @@ snapshot() {
     {
         local PRIMARY_IFACE=""
         local IPV4_ADDR=""
+        local IPV6_ADDR=""
         local GATEWAY=""
+        local IPV6_GATEWAY=""
         if have ip; then
             PRIMARY_IFACE="$(ip route 2>/dev/null | awk '/^default/ {print $5; exit}')"
             if [[ -n "$PRIMARY_IFACE" ]]; then
                 IPV4_ADDR="$(ip -4 addr show "$PRIMARY_IFACE" 2>/dev/null | awk '/inet / { sub(/\/.*/, "", $2); print $2; exit }')"
+                IPV6_ADDR="$(ip -6 addr show "$PRIMARY_IFACE" 2>/dev/null \
+                    | awk '$1 == "inet6" {print $2; exit}')"
             fi
             GATEWAY="$(ip route 2>/dev/null | awk '/^default/ {print $3; exit}')"
+            IPV6_GATEWAY="$(ip -6 route 2>/dev/null | awk '/^default/ {print $3; exit}')"
         fi
         echo "Primary interface:   $PRIMARY_IFACE"
         echo "IPv4 address:        $IPV4_ADDR"
+        echo "IPv6 address:        ${IPV6_ADDR:-"-"}"
         echo "Gateway:             $GATEWAY"
+        echo "IPv6 gateway:        ${IPV6_GATEWAY:-"-"}"
     } | indent + 4
 
     ## DNS resolver
@@ -633,7 +641,17 @@ snapshot() {
     echo -e "\n# Routes"
     {
         if have ip; then
-            ip route 2>/dev/null || echo "routes unavailable"
+            local IPV6_ROUTES=""
+            echo "IPv4 routes:"
+            ip route 2>/dev/null | indent + 4 || echo "    routes unavailable"
+            echo
+            echo "IPv6 routes:"
+            IPV6_ROUTES="$(ip -6 route 2>/dev/null || true)"
+            if [[ -n "$IPV6_ROUTES" ]]; then
+                printf '%s\n' "$IPV6_ROUTES" | indent + 4
+            else
+                echo "    (none)"
+            fi
         else
             echo "ip not found"
         fi
@@ -737,22 +755,106 @@ format_uptime() {
 }
 
 cpu_report() {
+    local before after
+    local user nice system idle iowait irq softirq steal
+    local user2 nice2 system2 idle2 iowait2 irq2 softirq2 steal2
+    local user_pct nice_pct system_pct idle_pct iowait_pct irq_pct
+    local softirq_pct steal_pct
     echo -e "\n# CPU"
     if have nproc; then
         field "CPU cores" "$(nproc)"
     else
         field "CPU cores" "(unknown)"
     fi
+
+    if [[ -r /proc/stat ]]; then
+        read -r user nice system idle iowait irq softirq steal < <(
+            awk '/^cpu / {print $2, $3, $4, $5, $6, $7, $8, $9; exit}' /proc/stat
+        )
+        sleep 1
+        read -r user2 nice2 system2 idle2 iowait2 irq2 softirq2 steal2 < <(
+            awk '/^cpu / {print $2, $3, $4, $5, $6, $7, $8, $9; exit}' /proc/stat
+        )
+
+        before="$user $nice $system $idle $iowait $irq $softirq $steal"
+        after="$user2 $nice2 $system2 $idle2 $iowait2 $irq2 $softirq2 $steal2"
+        read -r user_pct nice_pct system_pct idle_pct iowait_pct irq_pct \
+            softirq_pct steal_pct < <(
+            awk -v before="$before" -v after="$after" '
+                BEGIN {
+                    split(before, b)
+                    split(after, a)
+                    total = 0
+                    for (i = 1; i <= 8; i++) total += a[i] - b[i]
+                    if (total <= 0) total = 1
+                    for (i = 1; i <= 8; i++) printf "%.1f%s", (a[i] - b[i]) * 100 / total, (i == 8 ? "\n" : " ")
+                }
+            '
+        )
+        field "User time" "${user_pct:-0.0}%"
+        field "System time" "${system_pct:-0.0}%"
+        field "Nice process time" "${nice_pct:-0.0}%"
+        field "Idle time" "${idle_pct:-0.0}%"
+        field "I/O wait time" "${iowait_pct:-0.0}%"
+        field "Hardware interrupt time" "${irq_pct:-0.0}%"
+        field "Software interrupt time" "${softirq_pct:-0.0}%"
+        field "Steal time" "${steal_pct:-0.0}%"
+    else
+        field "CPU timing" " /proc/stat unavailable"
+    fi
 }
 
 memory_report() {
-    local total avail used
+    local total free buffers cached avail used swap_total swap_free swap_used
     echo -e "\n# Memory"
     total="$(awk '/^MemTotal:/ {print $2}' /proc/meminfo 2>/dev/null || echo 0)"
+    free="$(awk '/^MemFree:/ {print $2}' /proc/meminfo 2>/dev/null || echo 0)"
+    buffers="$(awk '/^Buffers:/ {print $2}' /proc/meminfo 2>/dev/null || echo 0)"
+    cached="$(awk '/^Cached:/ {print $2}' /proc/meminfo 2>/dev/null || echo 0)"
     avail="$(awk '/^MemAvailable:/ {print $2}' /proc/meminfo 2>/dev/null || echo 0)"
     used="$((total - avail))"
+    swap_total="$(awk '/^SwapTotal:/ {print $2}' /proc/meminfo 2>/dev/null || echo 0)"
+    swap_free="$(awk '/^SwapFree:/ {print $2}' /proc/meminfo 2>/dev/null || echo 0)"
+    swap_used="$((swap_total - swap_free))"
     field "Total memory" "$(kib_to_human "$total")"
+    field "Free memory" "$(kib_to_human "$free")"
     field "Used memory" "$(kib_to_human "$used")"
+    field "Buffers" "$(kib_to_human "$buffers")"
+    field "Cached memory" "$(kib_to_human "$cached")"
+    field "Available memory" "$(kib_to_human "$avail")"
+    field "Swap total" "$(kib_to_human "$swap_total")"
+    field "Swap free" "$(kib_to_human "$swap_free")"
+    field "Swap used" "$(kib_to_human "$swap_used")"
+}
+
+tasks_report() {
+    local total running sleeping stopped zombie
+    echo -e "\n# Tasks"
+
+    if ! have ps; then
+        field "Process statistics" "ps is not available"
+        return 0
+    fi
+
+    read -r total running sleeping stopped zombie < <(
+        ps -e -o stat= 2>/dev/null | awk '
+            {
+                total++
+                state = substr($1, 1, 1)
+                if (state == "R") running++
+                else if (state == "S" || state == "D" || state == "I") sleeping++
+                else if (state == "T" || state == "t") stopped++
+                else if (state == "Z") zombie++
+            }
+            END { print total + 0, running + 0, sleeping + 0, stopped + 0, zombie + 0 }
+        '
+    )
+
+    field "Total tasks" "${total:-0}"
+    field "Running" "${running:-0}"
+    field "Sleeping" "${sleeping:-0}"
+    field "Stopped" "${stopped:-0}"
+    field "Zombie" "${zombie:-0}"
 }
 
 disk_report() {
@@ -981,7 +1083,7 @@ runtime_report() {
 }
 
 network_report() {
-    local path iface oper ip_addr rx tx
+    local path iface oper ip_addr ip6_addr rx tx
     echo -e "\n# Network"
     if ! have ip; then
         echo "    ip is not available"
@@ -992,11 +1094,14 @@ network_report() {
         iface="$(basename "$path")"
         oper="$(cat "$path/operstate" 2>/dev/null || echo "unknown")"
         ip_addr="$(ip -o -4 addr show dev "$iface" 2>/dev/null | awk '{print $4}' || echo "-")"
+        ip6_addr="$(ip -o -6 addr show dev "$iface" 2>/dev/null \
+            | awk '{if (n++) printf ", "; printf "%s", $4}' || echo "-")"
         rx="$(cat "$path/statistics/rx_errors" 2>/dev/null || echo 0)"
         tx="$(cat "$path/statistics/tx_errors" 2>/dev/null || echo 0)"
         field "Interface" "$iface"
         field "Status" "$oper"
         field "IPv4" "${ip_addr:-"-"}"
+        field "IPv6" "${ip6_addr:-"-"}"
         field "Errors" "$((rx + tx))"
         echo
     done
