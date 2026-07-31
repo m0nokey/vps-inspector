@@ -1360,9 +1360,33 @@ docker_inspect_field() {
     docker inspect -f "$template" "$target" 2>/dev/null || true
 }
 
+docker_volume_size_bytes() {
+    local volume="$1"
+    local mountpoint size_kib size_bytes
+
+    mountpoint="$(docker volume inspect -f '{{.Mountpoint}}' "$volume" \
+        2>/dev/null | head -n 1)"
+    [[ -n "$mountpoint" && -d "$mountpoint" ]] || return 1
+
+    size_bytes="$(du -sx -B1 -- "$mountpoint" 2>/dev/null \
+        | awk 'NR == 1 {print $1; exit}')"
+    if [[ "$size_bytes" =~ ^[0-9]+$ ]]; then
+        printf '%s\n' "$size_bytes"
+        return 0
+    fi
+
+    size_kib="$(du -sxk -- "$mountpoint" 2>/dev/null \
+        | awk 'NR == 1 {print $1; exit}')"
+    [[ "$size_kib" =~ ^[0-9]+$ ]] || return 1
+    printf '%s\n' "$((size_kib * 1024))"
+}
+
 docker_volumes_report() {
     local rows named_rows dangling_rows total named_count anonymous_count
-    local dangling_count anonymous_dangling_count
+    local dangling_count anonymous_dangling_count anonymous_rows
+    local name driver size_bytes total_bytes measured_count unmeasured_count
+    local short_name
+    local -a volume_sizes=()
 
     rows="$(docker volume ls --format '{{.Name}}\t{{.Driver}}' 2>/dev/null || true)"
     if [[ -z "$rows" ]]; then
@@ -1392,6 +1416,8 @@ docker_volumes_report() {
         | awk 'NF {count++} END {print count + 0}')"
     anonymous_dangling_count="$(printf '%s\n' "$dangling_rows" \
         | awk '$1 ~ /^[[:xdigit:]]{64}$/ {count++} END {print count + 0}')"
+    anonymous_rows="$(printf '%s\n' "$rows" \
+        | awk -F '\t' '$1 ~ /^[[:xdigit:]]{64}$/ {print $1}')"
 
     echo
     echo "    Anonymous volumes:"
@@ -1399,6 +1425,41 @@ docker_volumes_report() {
         printf "        Total:    %s\n" "$anonymous_count"
         printf "        In use:   %s\n" "$((anonymous_count - anonymous_dangling_count))"
         printf "        Dangling: %s\n" "$anonymous_dangling_count"
+
+        total_bytes=0
+        measured_count=0
+        unmeasured_count=0
+        while IFS= read -r name; do
+            [[ -n "$name" ]] || continue
+            if size_bytes="$(docker_volume_size_bytes "$name")"; then
+                total_bytes=$((total_bytes + size_bytes))
+                measured_count=$((measured_count + 1))
+                volume_sizes+=("$size_bytes"$'\t'"$name")
+            else
+                unmeasured_count=$((unmeasured_count + 1))
+            fi
+        done <<< "$anonymous_rows"
+
+        if (( measured_count > 0 )); then
+            printf "        Disk usage: %.2f GiB\n" \
+                "$(awk -v bytes="$total_bytes" 'BEGIN {print bytes / 1024 / 1024 / 1024}')"
+            if (( unmeasured_count > 0 )); then
+                printf "        Unmeasured:  %s\n" "$unmeasured_count"
+            fi
+
+            echo
+            echo "        Largest anonymous volumes:"
+            printf '%s\n' "${volume_sizes[@]}" \
+                | sort -nr -k1,1 \
+                | head -n 5 \
+                | while IFS=$'\t' read -r size_bytes name; do
+                    short_name="${name:0:12}..."
+                    printf "            %-10s %s\n" \
+                        "$(bytes_to_human "$size_bytes")" "$short_name"
+                done
+        else
+            echo "        Disk usage: unavailable"
+        fi
     else
         echo "        (none)"
     fi
