@@ -1255,25 +1255,20 @@ network_snapshot() {
 }
 
 ports_metrics() {
+    local line netid state recv_q send_q local_address peer_address process
+
     if have ss; then
         {
             printf "%-6s %-8s %-6s %-6s %-30s %-22s %s\n" \
                 "Netid" "State" "Recv-Q" "Send-Q" "Local Address:Port" "Peer Address:Port" "Process"
 
-            ss -tuplnH 2>/dev/null | awk '
-                {
-                    process = ""
-                    if (NF >= 7) {
-                        process = $7
-                        for (i = 8; i <= NF; i++) {
-                            process = process " " $i
-                        }
-                    }
-
-                    printf "%-6s %-8s %-6s %-6s %-30s %-22s %s\n",
-                        $1, $2, $3, $4, $5, $6, process
-                }
-            '
+            while IFS= read -r line; do
+                [[ -n "$line" ]] || continue
+                read -r netid state recv_q send_q local_address peer_address process <<< "$line"
+                printf "%-6s %-8s %-6s %-6s %-30s %-22s %s\n" \
+                    "$netid" "$state" "$recv_q" "$send_q" "$local_address" \
+                    "$peer_address" "$process"
+            done < <(ss -tuplnH 2>/dev/null)
         } | indent + 4 || echo "    Cannot read listening ports"
     else
         echo "    ss is not available"
