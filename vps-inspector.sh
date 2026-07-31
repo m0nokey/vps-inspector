@@ -480,7 +480,7 @@ snapshot() {
     memory_metrics
 
     echo -e "\n# Storage"
-    disk_metrics
+    storage_snapshot
     network_snapshot
     users_report
 
@@ -559,12 +559,6 @@ snapshot() {
             echo "systemctl not found"
         fi
     } | indent + 4
-
-    echo -e "\n# Top 10 largest logs"
-    {
-        du -sh /var/log/* 2>/dev/null | sort -hr | head -n 10 | awk '{size=$1; $1=""; sub(/^ */, ""); printf "%-8s %s\n", size, $0}'
-    } | indent + 4
-
 
     echo -e "\n# Broken symlinks under /usr"
     {
@@ -768,13 +762,118 @@ tasks_report() {
 }
 
 top_memory_processes() {
-    if ps aux --sort=-%mem >/dev/null 2>&1; then
-        ps aux --sort=-%mem | head -n 11
-    elif ps aux >/dev/null 2>&1; then
-        ps aux | head -n 11
-    else
-        ps 2>/dev/null | head -n 11 || echo "ps output unavailable"
+    if ps -eo user,pid,pcpu,pmem,vsz,rss,stat,time,comm >/dev/null 2>&1; then
+        printf "%-10s %-7s %-6s %-6s %-8s %-8s %-6s %-8s %s\n" \
+            "USER" "PID" "%CPU" "%MEM" "VSZ" "RSS" "STAT" "TIME" "COMMAND"
+        ps -eo user=,pid=,pcpu=,pmem=,vsz=,rss=,stat=,time=,comm= --sort=-pmem \
+            | head -n 10 \
+            | awk '{printf "%-10s %-7s %-6s %-6s %-8s %-8s %-6s %-8s %s\n", \
+                $1, $2, $3, $4, $5, $6, $7, $8, $9}'
+        return 0
     fi
+
+    printf "%-10s %-7s %-6s %-6s %-8s %-8s %-6s %-8s %s\n" \
+        "USER" "PID" "%CPU" "%MEM" "VSZ" "RSS" "STAT" "TIME" "COMMAND"
+    if ps aux >/dev/null 2>&1; then
+        ps aux | tail -n +2 | head -n 10 \
+            | awk '{command=$11; for (i=12; i<=NF; i++) command=command " " $i; \
+                printf "%-10s %-7s %-6s %-6s %-8s %-8s %-6s %-8s %s\n", \
+                $1, $2, $3, $4, $5, $6, $8, $10, command}'
+    else
+        echo "ps output unavailable"
+    fi
+}
+
+storage_snapshot() {
+    local disk_names disk row name size type fstype mount model free_space
+    local read_ops write_ops io_time_ms errs kernel_matches
+
+    echo "    Devices and filesystems:"
+    if ! have lsblk; then
+        echo "        lsblk not found"
+        return 0
+    fi
+
+    printf "        %-10s %-8s %-6s %-8s %-16s %-14s %s\n" \
+        "NAME" "SIZE" "TYPE" "FSTYPE" "MOUNTPOINT" "FREE SPACE" "MODEL"
+    while IFS= read -r row; do
+        name="$(sed -n 's/.*NAME="\([^"]*\)".*/\1/p' <<< "$row")"
+        size="$(sed -n 's/.*SIZE="\([^"]*\)".*/\1/p' <<< "$row")"
+        type="$(sed -n 's/.*TYPE="\([^"]*\)".*/\1/p' <<< "$row")"
+        fstype="$(sed -n 's/.*FSTYPE="\([^"]*\)".*/\1/p' <<< "$row")"
+        mount="$(sed -n 's/.*MOUNTPOINT="\([^"]*\)".*/\1/p' <<< "$row")"
+        [[ -n "$name" ]] || continue
+        free_space=""
+        model=""
+        if [[ "$type" == "disk" ]]; then
+            model="$(lsblk -dno MODEL "/dev/$name" 2>/dev/null || true)"
+        fi
+        if [[ -n "$mount" ]] && have df; then
+            free_space="$(df -kP "$mount" 2>/dev/null \
+                | awk 'NR == 2 {gsub("%", "", $5); printf "%.2fG", $4 / 1024 / 1024}')"
+        fi
+        printf "        %-10s %-8s %-6s %-8s %-16s %-14s %s\n" \
+            "$name" "$size" "$type" "$fstype" "$mount" \
+            "$free_space" "$model"
+    done < <(lsblk -P -o NAME,SIZE,TYPE,FSTYPE,MOUNTPOINT 2>/dev/null)
+
+    disk_names="$(lsblk -d -n -o NAME,TYPE 2>/dev/null \
+        | awk '$2 == "disk" {print $1}')"
+    while IFS= read -r disk; do
+        [[ -n "$disk" ]] || continue
+        echo
+        echo "    I/O activity:"
+        echo "        Device: /dev/$disk"
+        read -r read_ops write_ops io_time_ms < <(disk_activity_delta "$disk")
+        printf "        Read operations:  %s\n" "$read_ops"
+        printf "        Write operations: %s\n" "$write_ops"
+        printf "        I/O time delta:   %s ms\n" "$io_time_ms"
+
+    done <<< "$disk_names"
+
+    echo
+    echo "    Kernel messages:"
+    kernel_matches="N/A"
+    if [[ -n "$disk_names" ]]; then
+        kernel_matches=0
+        while IFS= read -r disk; do
+            [[ -n "$disk" ]] || continue
+            errs="$(disk_kernel_error_matches "$disk")"
+            if [[ "$errs" == "N/A" ]]; then
+                kernel_matches="N/A"
+                break
+            fi
+            kernel_matches=$((kernel_matches + errs))
+        done <<< "$disk_names"
+    fi
+    printf "        Kernel error matches: %s\n" "$kernel_matches"
+
+    echo
+    echo "    Disk usage warnings (>90%):"
+    if have df; then
+        df -h | awk '$5+0 > 90 {print "        WARN:", $0}'
+        [[ "$(df -h | awk '$5+0 > 90 {count++} END {print count + 0}')" -gt 0 ]] \
+            || echo "        (none)"
+    else
+        echo "        df not found"
+    fi
+
+    echo
+    echo "    Inode usage warnings (>90%):"
+    if have df; then
+        df -i | awk '$5+0 > 90 {print "        WARN: inode usage high:", $0}'
+        [[ "$(df -i | awk '$5+0 > 90 {count++} END {print count + 0}')" -gt 0 ]] \
+            || echo "        (none)"
+    else
+        echo "        df not found"
+    fi
+
+    echo
+    echo "    Largest logs:"
+    du -sh /var/log/* 2>/dev/null \
+        | sort -hr \
+        | head -n 10 \
+        | awk '{size=$1; $1=""; sub(/^ */, ""); printf "        %-8s %s\n", size, $0}'
 }
 
 disk_metrics() {
@@ -1032,7 +1131,7 @@ network_report() {
 }
 
 network_snapshot() {
-    local primary_iface ipv4_addr ipv6_addr gateway ipv6_gateway
+    local primary_iface ipv4_addr ipv6_addr gateway ipv6_gateway ipv4_routes
     local dns_resolver path iface oper ip_addr ip6_addr rx tx
     local ipv6_routes
 
@@ -1057,7 +1156,7 @@ network_snapshot() {
     printf "        Primary interface:       %s\n" "$primary_iface"
     printf "        IPv4 address:             %s\n" "$ipv4_addr"
     printf "        IPv4 default gateway:     %s\n" "$gateway"
-    printf "        IPv6 address:             %s\n" "$ipv6_addr"
+    printf "        IPv6 addresses:           %s\n" "$ipv6_addr"
     printf "        IPv6 default gateway:     %s\n" "$ipv6_gateway"
 
     echo
@@ -1100,11 +1199,19 @@ network_snapshot() {
     fi
     printf "        Resolver service:         %s\n" "$dns_resolver"
     echo "        Nameservers:"
-    awk '/^nameserver/ {printf "            %s\n", $2}' /etc/resolv.conf
+    if ! awk '/^nameserver/ {printf "            %s\n", $2; found=1} END {exit !found}' \
+        /etc/resolv.conf; then
+        echo "            (none)"
+    fi
 
     echo
     echo "    IPv4 routes:"
-    ip route 2>/dev/null | sed 's/^/        /' || echo "        routes unavailable"
+    ipv4_routes="$(ip route 2>/dev/null || true)"
+    if [[ -n "$ipv4_routes" ]]; then
+        printf '%s\n' "$ipv4_routes" | sed 's/^/        /'
+    else
+        echo "        (none)"
+    fi
     echo
     echo "    IPv6 routes:"
     ipv6_routes="$(ip -6 route 2>/dev/null || true)"
