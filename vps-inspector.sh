@@ -1267,13 +1267,8 @@ ports_metrics() {
                         process = $7
                         for (i = 8; i <= NF; i++) {
                             process = process " " $i
-    }
-}
-
-disk_report() {
-    echo -e "\n# Disk"
-    disk_metrics
-}
+                        }
+                    }
 
                     printf "%-6s %-8s %-6s %-6s %-30s %-22s %s\n",
                         $1, $2, $3, $4, $5, $6, process
@@ -1283,6 +1278,11 @@ disk_report() {
     else
         echo "    ss is not available"
     fi
+}
+
+disk_report() {
+    echo -e "\n# Disk"
+    disk_metrics
 }
 
 ports_report() {
