@@ -1360,6 +1360,50 @@ docker_inspect_field() {
     docker inspect -f "$template" "$target" 2>/dev/null || true
 }
 
+docker_volumes_report() {
+    local rows named_rows dangling_rows total named_count anonymous_count
+    local dangling_count anonymous_dangling_count
+
+    rows="$(docker volume ls --format '{{.Name}}\t{{.Driver}}' 2>/dev/null || true)"
+    if [[ -z "$rows" ]]; then
+        echo "    (none)"
+        return 0
+    fi
+
+    named_rows="$(printf '%s\n' "$rows" | awk -F '\t' \
+        '$1 !~ /^[[:xdigit:]]{64}$/ {print}')"
+    echo "    Named volumes:"
+    if [[ -n "$named_rows" ]]; then
+        printf "        %-48s %s\n" "NAME" "DRIVER"
+        while IFS=$'\t' read -r name driver; do
+            [[ -n "$name" ]] || continue
+            printf "        %-48s %s\n" "$name" "$driver"
+        done <<< "$named_rows"
+    else
+        echo "        (none)"
+    fi
+
+    total="$(printf '%s\n' "$rows" | awk 'NF {count++} END {print count + 0}')"
+    named_count="$(printf '%s\n' "$named_rows" \
+        | awk 'NF {count++} END {print count + 0}')"
+    anonymous_count=$((total - named_count))
+    dangling_rows="$(docker volume ls -qf dangling=true 2>/dev/null || true)"
+    dangling_count="$(printf '%s\n' "$dangling_rows" \
+        | awk 'NF {count++} END {print count + 0}')"
+    anonymous_dangling_count="$(printf '%s\n' "$dangling_rows" \
+        | awk '$1 ~ /^[[:xdigit:]]{64}$/ {count++} END {print count + 0}')"
+
+    echo
+    echo "    Anonymous volumes:"
+    if (( anonymous_count > 0 )); then
+        printf "        Total:    %s\n" "$anonymous_count"
+        printf "        In use:   %s\n" "$((anonymous_count - anonymous_dangling_count))"
+        printf "        Dangling: %s\n" "$anonymous_dangling_count"
+    else
+        echo "        (none)"
+    fi
+}
+
 docker_report() {
     echo -e "\n# Docker"
     if ! have docker; then
@@ -1383,7 +1427,7 @@ docker_report() {
 
     echo
     echo "    volumes:"
-    docker volume ls 2>/dev/null | indent + 4 || echo "    Cannot list volumes"
+    docker_volumes_report
 }
 
 docker_snapshot_report() {
@@ -1414,7 +1458,7 @@ docker_snapshot_report() {
 
     echo
     echo "    volumes:"
-    docker volume ls 2>/dev/null | indent + 4 || echo "    Cannot list volumes"
+    docker_volumes_report
 
     echo
     echo "    all containers summary:"
