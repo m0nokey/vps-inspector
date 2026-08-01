@@ -615,28 +615,45 @@ field() {
     printf "    %-20s %s\n" "$1:" "$2"
 }
 
+format_scaled_value() {
+    local value="${1:-0}"
+    local divisor="$2"
+    local unit="$3"
+    local scaled
+
+    [[ "$value" =~ ^[0-9]+$ ]] || value=0
+    scaled="$(( (value * 100 + divisor / 2) / divisor ))"
+    printf "%d.%02d %s" "$((scaled / 100))" "$((scaled % 100))" "$unit"
+}
+
 kib_to_human() {
-    awk -v kib="${1:-0}" 'BEGIN {
-        mib = kib / 1024;
-        gib = mib / 1024;
-        if (gib >= 1) printf "%.2f GiB", gib;
-        else if (mib >= 1) printf "%.2f MiB", mib;
-        else printf "%d KiB", kib;
-    }'
+    local kib="${1:-0}"
+
+    [[ "$kib" =~ ^[0-9]+$ ]] || kib=0
+    if (( kib >= 1024 * 1024 )); then
+        format_scaled_value "$kib" $((1024 * 1024)) "GiB"
+    elif (( kib >= 1024 )); then
+        format_scaled_value "$kib" 1024 "MiB"
+    else
+        printf "%d KiB" "$kib"
+    fi
 }
 
 bytes_to_human() {
-    awk -v bytes="${1:-0}" 'BEGIN {
-        kib = bytes / 1024;
-        mib = kib / 1024;
-        gib = mib / 1024;
-        tib = gib / 1024;
-        if (tib >= 1) printf "%.2f TiB", tib;
-        else if (gib >= 1) printf "%.2f GiB", gib;
-        else if (mib >= 1) printf "%.2f MiB", mib;
-        else if (kib >= 1) printf "%.2f KiB", kib;
-        else printf "%d B", bytes;
-    }'
+    local bytes="${1:-0}"
+
+    [[ "$bytes" =~ ^[0-9]+$ ]] || bytes=0
+    if (( bytes >= 1024 * 1024 * 1024 * 1024 )); then
+        format_scaled_value "$bytes" $((1024 * 1024 * 1024 * 1024)) "TiB"
+    elif (( bytes >= 1024 * 1024 * 1024 )); then
+        format_scaled_value "$bytes" $((1024 * 1024 * 1024)) "GiB"
+    elif (( bytes >= 1024 * 1024 )); then
+        format_scaled_value "$bytes" $((1024 * 1024)) "MiB"
+    elif (( bytes >= 1024 )); then
+        format_scaled_value "$bytes" 1024 "KiB"
+    else
+        printf "%d B" "$bytes"
+    fi
 }
 
 format_uptime() {
@@ -649,6 +666,15 @@ format_uptime() {
 
 cpu_field() {
     printf "    %-24s %s\n" "$1:" "$2"
+}
+
+read_cpu_counters() {
+    local cpu user nice system idle iowait irq softirq steal
+
+    read -r cpu user nice system idle iowait irq softirq steal < /proc/stat || return 1
+    [[ "$cpu" == "cpu" ]] || return 1
+    printf "%s %s %s %s %s %s %s %s\n" \
+        "$user" "$nice" "$system" "$idle" "$iowait" "$irq" "$softirq" "$steal"
 }
 
 cpu_metrics() {
@@ -665,11 +691,11 @@ cpu_metrics() {
 
     if [[ -r /proc/stat ]]; then
         read -r user nice system idle iowait irq softirq steal < <(
-            awk '/^cpu / {print $2, $3, $4, $5, $6, $7, $8, $9; exit}' /proc/stat
+            read_cpu_counters
         )
         sleep 1
         read -r user2 nice2 system2 idle2 iowait2 irq2 softirq2 steal2 < <(
-            awk '/^cpu / {print $2, $3, $4, $5, $6, $7, $8, $9; exit}' /proc/stat
+            read_cpu_counters
         )
 
         before="$user $nice $system $idle $iowait $irq $softirq $steal"
@@ -705,16 +731,57 @@ cpu_report() {
     cpu_metrics
 }
 
+meminfo_value() {
+    local wanted_key="$1"
+    local key value unit
+
+    while read -r key value unit; do
+        if [[ "$key" == "${wanted_key}:" ]]; then
+            printf "%s\n" "${value:-0}"
+            return 0
+        fi
+    done < /proc/meminfo
+
+    printf "0\n"
+}
+
+swap_metrics() {
+    local source type size_kib used_kib priority size_bytes used_bytes index=0
+
+    if [[ -r /proc/swaps ]]; then
+        while read -r source type size_kib used_kib priority; do
+            [[ "$source" == "Filename" ]] && continue
+            [[ -n "$source" ]] || continue
+            index=$((index + 1))
+            size_bytes="$((size_kib * 1024))"
+            used_bytes="$((used_kib * 1024))"
+            field "Swap source ${index}" "$source"
+            field "Swap type ${index}" "$type"
+            field "Swap size ${index}" "$(bytes_to_human "$size_bytes")"
+            field "Swap used ${index}" "$(bytes_to_human "$used_bytes")"
+            field "Swap priority ${index}" "$priority"
+        done < /proc/swaps
+    fi
+
+    if (( index == 0 )); then
+        field "Swap status" "disabled"
+        field "Swap source" "none"
+        field "Swap type" "none"
+    else
+        field "Swap status" "enabled (${index} source$( (( index == 1 )) && printf '' || printf 's' ))"
+    fi
+}
+
 memory_metrics() {
     local total free buffers cached avail used swap_total swap_free swap_used
-    total="$(awk '/^MemTotal:/ {print $2}' /proc/meminfo 2>/dev/null || echo 0)"
-    free="$(awk '/^MemFree:/ {print $2}' /proc/meminfo 2>/dev/null || echo 0)"
-    buffers="$(awk '/^Buffers:/ {print $2}' /proc/meminfo 2>/dev/null || echo 0)"
-    cached="$(awk '/^Cached:/ {print $2}' /proc/meminfo 2>/dev/null || echo 0)"
-    avail="$(awk '/^MemAvailable:/ {print $2}' /proc/meminfo 2>/dev/null || echo 0)"
+    total="$(meminfo_value MemTotal)"
+    free="$(meminfo_value MemFree)"
+    buffers="$(meminfo_value Buffers)"
+    cached="$(meminfo_value Cached)"
+    avail="$(meminfo_value MemAvailable)"
     used="$((total - avail))"
-    swap_total="$(awk '/^SwapTotal:/ {print $2}' /proc/meminfo 2>/dev/null || echo 0)"
-    swap_free="$(awk '/^SwapFree:/ {print $2}' /proc/meminfo 2>/dev/null || echo 0)"
+    swap_total="$(meminfo_value SwapTotal)"
+    swap_free="$(meminfo_value SwapFree)"
     swap_used="$((swap_total - swap_free))"
     field "Total memory" "$(kib_to_human "$total")"
     field "Free memory" "$(kib_to_human "$free")"
@@ -725,6 +792,7 @@ memory_metrics() {
     field "Swap total" "$(kib_to_human "$swap_total")"
     field "Swap free" "$(kib_to_human "$swap_free")"
     field "Swap used" "$(kib_to_human "$swap_used")"
+    swap_metrics
 }
 
 memory_report() {
@@ -1039,17 +1107,17 @@ load_metrics() {
     }
     cpu_cores="$(nproc 2>/dev/null || echo 1)"
     [[ "$cpu_cores" -gt 0 ]] || cpu_cores=1
-    per_cpu1="$(awk -v load="$load1" -v cpu="$cpu_cores" 'BEGIN { printf "%.2f", load / cpu }')"
-    per_cpu5="$(awk -v load="$load5" -v cpu="$cpu_cores" 'BEGIN { printf "%.2f", load / cpu }')"
-    per_cpu15="$(awk -v load="$load15" -v cpu="$cpu_cores" 'BEGIN { printf "%.2f", load / cpu }')"
-    trend="$(awk -v l1="$load1" -v l5="$load5" -v l15="$load15" 'BEGIN {
-        if (l1 > l5 && l5 >= l15) print "increasing";
-        else if (l1 < l5 && l5 <= l15) print "decreasing";
+    per_cpu1="$(awk -v load_value="$load1" -v cpu_count="$cpu_cores" 'BEGIN { printf "%.2f", load_value / cpu_count }')"
+    per_cpu5="$(awk -v load_value="$load5" -v cpu_count="$cpu_cores" 'BEGIN { printf "%.2f", load_value / cpu_count }')"
+    per_cpu15="$(awk -v load_value="$load15" -v cpu_count="$cpu_cores" 'BEGIN { printf "%.2f", load_value / cpu_count }')"
+    trend="$(awk -v first_load="$load1" -v middle_load="$load5" -v last_load="$load15" 'BEGIN {
+        if (first_load > middle_load && middle_load >= last_load) print "increasing";
+        else if (first_load < middle_load && middle_load <= last_load) print "decreasing";
         else print "stable/mixed";
     }')"
-    interpretation="$(awk -v l1="$load1" -v cpu="$cpu_cores" 'BEGIN {
-        if (l1 < cpu * 0.7) print "low demand relative to CPU count";
-        else if (l1 < cpu) print "moderate demand relative to CPU count";
+    interpretation="$(awk -v first_load="$load1" -v cpu_count="$cpu_cores" 'BEGIN {
+        if (first_load < cpu_count * 0.7) print "low demand relative to CPU count";
+        else if (first_load < cpu_count) print "moderate demand relative to CPU count";
         else print "high demand relative to CPU count";
     }')"
     field "Load average (1m)" "$load1"
