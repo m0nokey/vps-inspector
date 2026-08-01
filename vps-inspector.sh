@@ -889,6 +889,8 @@ storage_snapshot() {
             "$free_space" "$model"
     done < <(lsblk -P -o NAME,SIZE,TYPE,FSTYPE,MOUNTPOINT 2>/dev/null)
 
+    lvm_metrics
+
     disk_names="$(lsblk -d -n -o NAME,TYPE 2>/dev/null \
         | awk '$2 == "disk" {print $1}')"
     while IFS= read -r disk; do
