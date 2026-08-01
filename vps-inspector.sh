@@ -618,20 +618,30 @@ field() {
 device_model() {
     local disk="$1"
     local device="/dev/$disk"
-    local model virt
+    local model vendor virt
 
-    model="$(lsblk -dno MODEL "$device" 2>/dev/null || true)"
+    model="$(lsblk -d -n -o MODEL "$device" 2>/dev/null \
+        | sed 's/^[[:space:]]*//; s/[[:space:]]*$//' || true)"
     if [[ -z "$model" ]] && have udevadm; then
+        vendor="$(udevadm info --query=property --name="$device" 2>/dev/null \
+            | sed -n 's/^ID_VENDOR=//p' | head -n 1 \
+            | sed 's/_/ /g')"
         model="$(udevadm info --query=property --name="$device" 2>/dev/null \
-            | sed -n 's/^ID_MODEL=//p' | head -n 1)"
+            | sed -n 's/^ID_MODEL=//p' | head -n 1 \
+            | sed 's/_/ /g')"
         if [[ -z "$model" ]]; then
             model="$(udevadm info --query=property --name="$device" 2>/dev/null \
-                | sed -n 's/^ID_MODEL_FROM_DATABASE=//p' | head -n 1)"
+                | sed -n 's/^ID_MODEL_FROM_DATABASE=//p' | head -n 1 \
+                | sed 's/_/ /g')"
         fi
-        model="$(printf '%s' "$model" | sed 's/_/ /g')"
+        if [[ -n "$vendor" && -n "$model" ]]; then
+            model="$vendor $model"
+        fi
     fi
     if [[ -z "$model" ]] && [[ -r "/sys/block/$disk/device/model" ]]; then
         model="$(<"/sys/block/$disk/device/model")"
+        model="$(printf '%s' "$model" \
+            | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
     fi
     if [[ -z "$model" ]] && have systemd-detect-virt; then
         virt="$(systemd-detect-virt --vm 2>/dev/null || true)"
