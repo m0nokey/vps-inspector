@@ -949,7 +949,7 @@ storage_snapshot() {
 }
 
 disk_metrics() {
-    local disk disk_names size mount avail used read_ops write_ops io_time_ms errs
+    local disk disk_names size mount model avail used read_ops write_ops io_time_ms errs
     local -a df_warn=()
     local -a ino_warn=()
 
@@ -972,8 +972,11 @@ disk_metrics() {
             [[ -n "$disk" ]] || continue
             size="$(lsblk -b -d -n -o SIZE "/dev/$disk" 2>/dev/null || echo 0)"
             mount="$(lsblk -nr -o MOUNTPOINT "/dev/$disk" 2>/dev/null | grep -m1 . || true)"
+            model="$(lsblk -dno MODEL "/dev/$disk" 2>/dev/null || true)"
+            [[ -n "$model" ]] || model="not exposed"
             field "Disk" "/dev/$disk"
             field "Size" "$(bytes_to_human "$size")"
+            field "Disk model" "$model"
             if [[ -n "$mount" ]] && have df; then
                 avail="$(df -kP "$mount" 2>/dev/null | awk 'NR == 2 {print $4}' || echo 0)"
                 used="$(df -P "$mount" 2>/dev/null | awk 'NR == 2 {gsub("%", "", $5); print $5}' || echo 0)"
@@ -1013,6 +1016,8 @@ disk_metrics() {
     else
         echo "    lsblk not found"
     fi
+
+    lvm_metrics
 
     echo
     echo "    Disk usage warnings (>90%):"
@@ -1098,6 +1103,61 @@ disk_kernel_error_matches() {
     pattern="\\b${disk}\\b.*(I/O error|error|fail|critical|medium error|blk_update_request)"
     count="$(dmesg 2>/dev/null | grep -iEc "$pattern" || true)"
     echo "${count:-0}"
+}
+
+lvm_metrics() {
+    local row path type size fstype mount found=0
+    local lv_path vg_name lv_size
+
+    echo
+    echo "    LVM:"
+    if ! have lsblk; then
+        field "LVM status" "unknown (lsblk not found)"
+        return 0
+    fi
+
+    while IFS= read -r row; do
+        path="$(sed -n 's/.*PATH="\([^"]*\)".*/\1/p' <<< "$row")"
+        type="$(sed -n 's/.*TYPE="\([^"]*\)".*/\1/p' <<< "$row")"
+        size="$(sed -n 's/.*SIZE="\([^"]*\)".*/\1/p' <<< "$row")"
+        fstype="$(sed -n 's/.*FSTYPE="\([^"]*\)".*/\1/p' <<< "$row")"
+        mount="$(sed -n 's/.*MOUNTPOINT="\([^"]*\)".*/\1/p' <<< "$row")"
+        [[ "$type" == "lvm" ]] || continue
+        found=$((found + 1))
+        [[ -n "$fstype" ]] || fstype=none
+        [[ -n "$mount" ]] || mount=none
+        field "Logical volume $found" "$path"
+        field "LVM size $found" "$size"
+        field "LVM filesystem $found" "$fstype"
+        field "LVM mount $found" "$mount"
+    done < <(lsblk -P -o PATH,TYPE,SIZE,FSTYPE,MOUNTPOINT 2>/dev/null)
+
+    if (( found == 0 )); then
+        field "LVM status" "not detected"
+        return 0
+    fi
+    if (( found == 1 )); then
+        field "LVM status" "detected (1 logical volume)"
+    else
+        field "LVM status" "detected ($found logical volumes)"
+    fi
+
+    if have lvs; then
+        echo "        LVM volume groups:"
+        while IFS='|' read -r lv_path vg_name lv_size; do
+            lv_path="$(xargs <<< "$lv_path")"
+            vg_name="$(xargs <<< "$vg_name")"
+            lv_size="$(xargs <<< "$lv_size")"
+            [[ -n "$lv_path" ]] || continue
+            printf "          %-32s VG=%-20s SIZE=%s\n" \
+                "$lv_path" "$vg_name" "$lv_size"
+        done < <(
+            lvs --noheadings --separator '|' --options lv_path,vg_name,lv_size \
+                2>/dev/null
+        )
+    else
+        field "LVM tools" "not installed; lsblk detected logical volumes"
+    fi
 }
 
 load_metrics() {
