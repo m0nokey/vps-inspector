@@ -900,7 +900,7 @@ top_memory_processes() {
 }
 
 storage_snapshot() {
-    local disk_names disk row name size type fstype mount model free_space
+    local disk_names disk row name size type fstype mount vendor model free_space
     local read_ops write_ops io_time_ms errs kernel_matches
 
     echo "    Devices and filesystems:"
@@ -917,11 +917,16 @@ storage_snapshot() {
         type="$(sed -n 's/.*TYPE="\([^"]*\)".*/\1/p' <<< "$row")"
         fstype="$(sed -n 's/.*FSTYPE="\([^"]*\)".*/\1/p' <<< "$row")"
         mount="$(sed -n 's/.*MOUNTPOINT="\([^"]*\)".*/\1/p' <<< "$row")"
+        vendor="$(sed -n 's/.*VENDOR="\([^"]*\)".*/\1/p' <<< "$row")"
+        model="$(sed -n 's/.*MODEL="\([^"]*\)".*/\1/p' <<< "$row")"
         [[ -n "$name" ]] || continue
         free_space=""
-        model=""
         if [[ "$type" == "disk" ]]; then
-            model="$(device_model "$name")"
+            if [[ -n "$vendor" && -n "$model" ]]; then
+                model="$vendor $model"
+            elif [[ -z "$model" ]]; then
+                model="$(device_model "$name")"
+            fi
         fi
         if [[ -n "$mount" ]] && have df; then
             free_space="$(df -kP "$mount" 2>/dev/null \
@@ -930,7 +935,7 @@ storage_snapshot() {
         printf "        %-10s %-8s %-6s %-8s %-16s %-14s %s\n" \
             "$name" "$size" "$type" "$fstype" "$mount" \
             "$free_space" "$model"
-    done < <(lsblk -P -o NAME,SIZE,TYPE,FSTYPE,MOUNTPOINT 2>/dev/null)
+    done < <(lsblk -P -o NAME,SIZE,TYPE,FSTYPE,MOUNTPOINT,VENDOR,MODEL 2>/dev/null)
 
     lvm_metrics
 
