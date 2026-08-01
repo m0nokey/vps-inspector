@@ -615,6 +615,39 @@ field() {
     printf "    %-20s %s\n" "$1:" "$2"
 }
 
+device_model() {
+    local disk="$1"
+    local device="/dev/$disk"
+    local model virt
+
+    model="$(lsblk -dno MODEL "$device" 2>/dev/null || true)"
+    if [[ -z "$model" ]] && have udevadm; then
+        model="$(udevadm info --query=property --name="$device" 2>/dev/null \
+            | sed -n 's/^ID_MODEL=//p' | head -n 1)"
+        if [[ -z "$model" ]]; then
+            model="$(udevadm info --query=property --name="$device" 2>/dev/null \
+                | sed -n 's/^ID_MODEL_FROM_DATABASE=//p' | head -n 1)"
+        fi
+        model="$(printf '%s' "$model" | sed 's/_/ /g')"
+    fi
+    if [[ -z "$model" ]] && [[ -r "/sys/block/$disk/device/model" ]]; then
+        model="$(<"/sys/block/$disk/device/model")"
+    fi
+    if [[ -z "$model" ]] && have systemd-detect-virt; then
+        virt="$(systemd-detect-virt --vm 2>/dev/null || true)"
+        case "$virt" in
+            kvm|qemu)
+                model="QEMU/KVM virtual disk"
+                ;;
+        esac
+    fi
+
+    if [[ -z "$model" ]]; then
+        model="not exposed"
+    fi
+    printf '%s\n' "$model"
+}
+
 format_scaled_value() {
     local value="${1:-0}"
     local divisor="$2"
@@ -878,7 +911,7 @@ storage_snapshot() {
         free_space=""
         model=""
         if [[ "$type" == "disk" ]]; then
-            model="$(lsblk -dno MODEL "/dev/$name" 2>/dev/null || true)"
+            model="$(device_model "$name")"
         fi
         if [[ -n "$mount" ]] && have df; then
             free_space="$(df -kP "$mount" 2>/dev/null \
@@ -974,8 +1007,7 @@ disk_metrics() {
             [[ -n "$disk" ]] || continue
             size="$(lsblk -b -d -n -o SIZE "/dev/$disk" 2>/dev/null || echo 0)"
             mount="$(lsblk -nr -o MOUNTPOINT "/dev/$disk" 2>/dev/null | grep -m1 . || true)"
-            model="$(lsblk -dno MODEL "/dev/$disk" 2>/dev/null || true)"
-            [[ -n "$model" ]] || model="not exposed"
+            model="$(device_model "$disk")"
             field "Disk" "/dev/$disk"
             field "Size" "$(bytes_to_human "$size")"
             field "Disk model" "$model"
