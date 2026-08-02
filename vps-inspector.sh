@@ -663,10 +663,10 @@ storage_kv() {
 }
 
 storage_devices_table() {
-    local row name size type fstype mount vendor model free_space
+    local row name size type fstype mount vendor model free_space group category has_group
     local max_name=4 max_size=4 max_type=4 max_fstype=6 max_mount=11 max_free=10 max_model=5
     local i
-    local -a names=() sizes=() types=() fstypes=() mounts=() frees=() models=()
+    local -a names=() sizes=() types=() fstypes=() mounts=() frees=() models=() groups=()
 
     while IFS= read -r row; do
         name="$(sed -n 's/.*NAME="\([^"]*\)".*/\1/p' <<< "$row")"
@@ -697,8 +697,14 @@ storage_devices_table() {
 
         size="${size:--}"; type="${type:--}"; fstype="${fstype:--}"
         mount="${mount:--}"; model="${model:--}"
+        case "$name:$type" in
+            zd*:*|zvol*:*) group=virtual ;;
+            dm-*:*|loop*:*|md*:*|nbd*:*|rbd*:*|pve-*:*|vg-*:*|*:lvm) group=logical ;;
+            *:disk|*:part) group=physical ;;
+            *) group=other ;;
+        esac
         names+=("$name"); sizes+=("$size"); types+=("$type")
-        fstypes+=("$fstype"); mounts+=("$mount"); frees+=("$free_space"); models+=("$model")
+        fstypes+=("$fstype"); mounts+=("$mount"); frees+=("$free_space"); models+=("$model"); groups+=("$group")
         ((${#name} > max_name)) && max_name=${#name}
         ((${#size} > max_size)) && max_size=${#size}
         ((${#type} > max_type)) && max_type=${#type}
@@ -708,14 +714,30 @@ storage_devices_table() {
         ((${#model} > max_model)) && max_model=${#model}
     done < <(lsblk -P -o NAME,SIZE,TYPE,FSTYPE,MOUNTPOINT,VENDOR,MODEL 2>/dev/null)
 
-    printf "        %-*s  %-*s  %-*s  %-*s  %-*s  %-*s  %s\n" \
-        "$max_name" NAME "$max_size" SIZE "$max_type" TYPE "$max_fstype" FSTYPE \
-        "$max_mount" MOUNTPOINT "$max_free" "FREE SPACE" MODEL
-    for ((i = 0; i < ${#names[@]}; i++)); do
+    for category in physical logical virtual other; do
+        has_group=0
+        for ((i = 0; i < ${#names[@]}; i++)); do
+            [[ "${groups[i]}" == "$category" ]] && has_group=1
+        done
+        (( has_group )) || continue
+
+        echo
+        case "$category" in
+            physical) echo "        Physical disks and partitions:" ;;
+            logical) echo "        Logical volumes and mapped devices:" ;;
+            virtual) echo "        Virtual block devices:" ;;
+            other) echo "        Other block devices:" ;;
+        esac
         printf "        %-*s  %-*s  %-*s  %-*s  %-*s  %-*s  %s\n" \
-            "$max_name" "${names[i]}" "$max_size" "${sizes[i]}" \
-            "$max_type" "${types[i]}" "$max_fstype" "${fstypes[i]}" \
-            "$max_mount" "${mounts[i]}" "$max_free" "${frees[i]}" "${models[i]}"
+            "$max_name" NAME "$max_size" SIZE "$max_type" TYPE "$max_fstype" FSTYPE \
+            "$max_mount" MOUNTPOINT "$max_free" "FREE SPACE" MODEL
+        for ((i = 0; i < ${#names[@]}; i++)); do
+            [[ "${groups[i]}" == "$category" ]] || continue
+            printf "        %-*s  %-*s  %-*s  %-*s  %-*s  %-*s  %s\n" \
+                "$max_name" "${names[i]}" "$max_size" "${sizes[i]}" \
+                "$max_type" "${types[i]}" "$max_fstype" "${fstypes[i]}" \
+                "$max_mount" "${mounts[i]}" "$max_free" "${frees[i]}" "${models[i]}"
+        done
     done
     ((${#names[@]} > 0)) || echo "        none"
 }
@@ -1439,6 +1461,8 @@ lvm_health_metrics() {
     echo "    LVM health:"
 
     if have pvs; then
+        echo
+        echo "        Physical volumes (PV):"
         while IFS='|' read -r pv_name pv_attr pv_size pv_free; do
             pv_name="$(printf '%s' "$pv_name" | storage_trim)"
             pv_attr="$(printf '%s' "$pv_attr" | storage_trim)"
@@ -1473,6 +1497,8 @@ lvm_health_metrics() {
     fi
 
     if have vgs; then
+        echo
+        echo "        Volume groups (VG):"
         while IFS='|' read -r vg_name vg_attr vg_size vg_free; do
             vg_name="$(printf '%s' "$vg_name" | storage_trim)"
             vg_attr="$(printf '%s' "$vg_attr" | storage_trim)"
@@ -1507,6 +1533,8 @@ lvm_health_metrics() {
     fi
 
     if have lvs; then
+        echo
+        echo "        Logical volumes (LV):"
         while IFS='|' read -r lv_path lv_attr lv_size pool_lv data_percent metadata_percent; do
             lv_path="$(printf '%s' "$lv_path" | storage_trim)"
             lv_attr="$(printf '%s' "$lv_attr" | storage_trim)"
@@ -1574,6 +1602,8 @@ zfs_health_metrics() {
         return 0
     fi
     echo "    ZFS health:"
+    echo
+    echo "        Pools:"
     printf "        %-24s %-12s %-12s %-14s %-10s %-10s %-10s %-8s\n" \
         "POOL" "STATE" "CAPACITY" "FRAGMENTATION" "READ" "WRITE" "CHECKSUM" "STATUS"
 
@@ -1622,7 +1652,6 @@ zfs_health_metrics() {
         [[ -n "$scan" ]] && storage_kv "scrub" "$scan"
 
         while IFS='|' read -r vdev vdev_state vread vwrite vcksum; do
-            [[ "$vdev" == /* ]] || continue
             physical="$(zfs_physical_disk "$vdev")"
             disk="${physical##*/}"
             model="$(device_model "$disk")"
@@ -1658,14 +1687,21 @@ zfs_health_metrics() {
             ((${#vdev_status} > max_status)) && max_status=${#vdev_status}
         done < <(
             zpool status -Hp -P "$pool" 2>/dev/null \
-                | awk '$1 ~ /^\// && $2 ~ /^(ONLINE|DEGRADED|FAULTED|UNAVAIL|OFFLINE|REMOVED)$/ {print $1 "|" $2 "|" $3 "|" $4 "|" $5}'
+                | awk -v wanted="$pool" '
+                    $1 != wanted &&
+                    $1 !~ /^(mirror|raidz|draid|spare|logs|cache|special)/ &&
+                    $2 ~ /^(ONLINE|DEGRADED|FAULTED|UNAVAIL|OFFLINE|REMOVED)$/ &&
+                    $3 ~ /^[0-9]+$/ && $4 ~ /^[0-9]+$/ && $5 ~ /^[0-9]+$/ {
+                        print $1 "|" $2 "|" $3 "|" $4 "|" $5
+                    }
+                '
         )
     done < <(zpool list -H -p -o name,health,capacity,fragmentation 2>/dev/null | sed 's/[[:space:]][[:space:]]*/|/g')
 
     (( found > 0 )) || echo "    ZFS health: none"
     if (( ${#zfs_vdevs[@]} > 0 )); then
         echo
-        echo "    ZFS vdev health:"
+        echo "        Vdevs and physical disks:"
         printf "        %-*s  %-*s  %-*s  %-*s  %-*s  %-*s  %-*s  %-*s  %-*s  %-*s\n" \
             "$max_pool" POOL "$max_vdev" VDEV "$max_disk" DISK "$max_model" MODEL \
             "$max_state" STATE "$max_error" READ "$max_error" WRITE "$max_error" CHECKSUM \
