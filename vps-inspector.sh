@@ -473,7 +473,7 @@ snapshot() {
     echo "    Tasks and processes:"
     tasks_metrics | indent + 4
     echo
-    echo "    Top 10 by %MEM:"
+    echo "    Top 10 by %MEM/RSS:"
     top_memory_processes | indent + 4
 
     echo -e "\n# Memory"
@@ -981,20 +981,21 @@ top_memory_processes() {
     if ps -eo user,pid,pcpu,pmem,vsz,rss,stat,time,comm >/dev/null 2>&1; then
         printf "%-10s %-7s %-6s %-6s %-8s %-8s %-6s %-8s %s\n" \
             "USER" "PID" "%CPU" "%MEM" "VSZ" "RSS" "STAT" "TIME" "COMMAND"
-        ps -eo user=,pid=,pcpu=,pmem=,vsz=,rss=,stat=,time=,comm= --sort=-pmem \
+        ps -eo user=,pid=,pcpu=,pmem=,vsz=,rss=,stat=,time=,comm= 2>/dev/null \
+            | sort -k4,4nr \
             | head -n 10 \
             | awk '{printf "%-10s %-7s %-6s %-6s %-8s %-8s %-6s %-8s %s\n", \
                 $1, $2, $3, $4, $5, $6, $7, $8, $9}'
         return 0
     fi
 
-    printf "%-10s %-7s %-6s %-6s %-8s %-8s %-6s %-8s %s\n" \
-        "USER" "PID" "%CPU" "%MEM" "VSZ" "RSS" "STAT" "TIME" "COMMAND"
-    if ps aux >/dev/null 2>&1; then
-        ps aux | tail -n +2 | head -n 10 \
-            | awk '{command=$11; for (i=12; i<=NF; i++) command=command " " $i; \
-                printf "%-10s %-7s %-6s %-6s %-8s %-8s %-6s %-8s %s\n", \
-                $1, $2, $3, $4, $5, $6, $8, $10, command}'
+    if ps -o user,pid,vsz,rss,stat,time,comm >/dev/null 2>&1; then
+        echo "(CPU/MEM unavailable; showing first 10 processes)"
+        printf "%-10s %-7s %-6s %-6s %-8s %-8s %-6s %-8s %s\n" \
+            "USER" "PID" "%CPU" "%MEM" "VSZ" "RSS" "STAT" "TIME" "COMMAND"
+        ps -o user=,pid=,vsz=,rss=,stat=,time=,comm= 2>/dev/null | head -n 10 \
+            | awk '{printf "%-10s %-7s %-6s %-6s %-8s %-8s %-6s %-8s %s\n", \
+                $1, $2, "-", "-", $3, $4, $5, $6, $7}'
     else
         echo "ps output unavailable"
     fi
