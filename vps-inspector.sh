@@ -527,8 +527,7 @@ snapshot() {
 
         echo
         echo "USER CRONTABS"
-        awk -F: '$3>=1000 && $7 !~ /(nologin|false)$/ {print $1}' /etc/passwd \
-        | while read -r C_USER; do
+        awk -F: '$3>=1000 && $7 !~ /(nologin|false)$/ {print $1}' /etc/passwd | while read -r C_USER; do
             echo
             echo "User: $C_USER"
             crontab -l -u "$C_USER" 2>/dev/null || echo "(none)"
@@ -549,8 +548,7 @@ snapshot() {
     echo -e "\n# User-defined systemd services"
     {
         if have systemctl; then
-            awk -F: '$3>=1000 && $7 !~ /(nologin|false)$/ {print $1}' /etc/passwd \
-            | while read -r S_USER; do
+            awk -F: '$3>=1000 && $7 !~ /(nologin|false)$/ {print $1}' /etc/passwd | while read -r S_USER; do
                 echo "User: $S_USER"
                 su - "$S_USER" -c 'systemctl --user list-unit-files --type=service --no-pager' 2>/dev/null || echo "(none)"
                 echo
@@ -620,19 +618,12 @@ device_model() {
     local device="/dev/$disk"
     local model vendor virt
 
-    model="$(lsblk -d -n -o MODEL "$device" 2>/dev/null \
-        | sed 's/^[[:space:]]*//; s/[[:space:]]*$//' || true)"
+    model="$(lsblk -d -n -o MODEL "$device" 2>/dev/null | sed 's/^[[:space:]]*//; s/[[:space:]]*$//' || true)"
     if [[ -z "$model" ]] && have udevadm; then
-        vendor="$(udevadm info --query=property --name="$device" 2>/dev/null \
-            | sed -n 's/^ID_VENDOR=//p' | head -n 1 \
-            | sed 's/_/ /g')"
-        model="$(udevadm info --query=property --name="$device" 2>/dev/null \
-            | sed -n 's/^ID_MODEL=//p' | head -n 1 \
-            | sed 's/_/ /g')"
+        vendor="$(udevadm info --query=property --name="$device" 2>/dev/null | sed -n 's/^ID_VENDOR=//p' | head -n 1 | sed 's/_/ /g')"
+        model="$(udevadm info --query=property --name="$device" 2>/dev/null | sed -n 's/^ID_MODEL=//p' | head -n 1 | sed 's/_/ /g')"
         if [[ -z "$model" ]]; then
-            model="$(udevadm info --query=property --name="$device" 2>/dev/null \
-                | sed -n 's/^ID_MODEL_FROM_DATABASE=//p' | head -n 1 \
-                | sed 's/_/ /g')"
+            model="$(udevadm info --query=property --name="$device" 2>/dev/null | sed -n 's/^ID_MODEL_FROM_DATABASE=//p' | head -n 1 | sed 's/_/ /g')"
         fi
         if [[ -n "$vendor" && -n "$model" ]]; then
             model="$vendor $model"
@@ -640,8 +631,7 @@ device_model() {
     fi
     if [[ -z "$model" ]] && [[ -r "/sys/block/$disk/device/model" ]]; then
         model="$(<"/sys/block/$disk/device/model")"
-        model="$(printf '%s' "$model" \
-            | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
+        model="$(printf '%s' "$model" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
     fi
     if [[ -z "$model" ]] && have systemd-detect-virt; then
         virt="$(systemd-detect-virt --vm 2>/dev/null || true)"
@@ -690,8 +680,7 @@ storage_devices_table() {
         fi
         free_space="-"
         if [[ -n "$mount" ]] && have df; then
-            free_space="$(df -kP "$mount" 2>/dev/null \
-                | awk 'NR == 2 {gsub("%", "", $5); printf "%.2fG", $4 / 1024 / 1024}')"
+            free_space="$(df -kP "$mount" 2>/dev/null | awk 'NR == 2 {gsub("%", "", $5); printf "%.2fG", $4 / 1024 / 1024}')"
             [[ -n "$free_space" ]] || free_space="-"
         fi
 
@@ -1025,8 +1014,7 @@ storage_snapshot() {
 
     storage_health_report
 
-    disk_names="$(lsblk -d -n -o NAME,TYPE 2>/dev/null \
-        | awk '$2 == "disk" {print $1}')"
+    disk_names="$(lsblk -d -n -o NAME,TYPE 2>/dev/null | awk '$2 == "disk" {print $1}')"
     disk_io_activity_table "$disk_names"
 
     echo
@@ -1050,8 +1038,7 @@ storage_snapshot() {
     echo "    Disk usage warnings (>90%):"
     if have df; then
         df -h | awk '$5+0 > 90 {print "        WARN:", $0}'
-        [[ "$(df -h | awk '$5+0 > 90 {count++} END {print count + 0}')" -gt 0 ]] \
-            || echo "        (none)"
+        [[ "$(df -h | awk '$5+0 > 90 {count++} END {print count + 0}')" -gt 0 ]] || echo "        (none)"
     else
         echo "        df not found"
     fi
@@ -1060,18 +1047,14 @@ storage_snapshot() {
     echo "    Inode usage warnings (>90%):"
     if have df; then
         df -i | awk '$5+0 > 90 {print "        WARN: inode usage high:", $0}'
-        [[ "$(df -i | awk '$5+0 > 90 {count++} END {print count + 0}')" -gt 0 ]] \
-            || echo "        (none)"
+        [[ "$(df -i | awk '$5+0 > 90 {count++} END {print count + 0}')" -gt 0 ]] || echo "        (none)"
     else
         echo "        df not found"
     fi
 
     echo
     echo "    Largest logs:"
-    du -sh /var/log/* 2>/dev/null \
-        | sort -hr \
-        | head -n 10 \
-        | awk '{size=$1; $1=""; sub(/^ */, ""); printf "        %-8s %s\n", size, $0}'
+    du -sh /var/log/* 2>/dev/null | sort -hr | head -n 10 | awk '{size=$1; $1=""; sub(/^ */, ""); printf "        %-8s %s\n", size, $0}'
 }
 
 disk_metrics() {
@@ -1288,8 +1271,7 @@ lvm_metrics() {
             printf "          %-32s %-20s %s\n" \
                 "$lv_path" "$vg_name" "$lv_size"
         done < <(
-            lvs --noheadings --separator '|' --options lv_path,vg_name,lv_size \
-                2>/dev/null
+            lvs --noheadings --separator '|' --options lv_path,vg_name,lv_size 2>/dev/null
         )
     else
         field "LVM tools" "not installed; lsblk detected logical volumes"
@@ -1648,10 +1630,7 @@ zfs_health_metrics() {
             storage_raise WARN
         fi
 
-        read -r zread zwrite zcksum < <(
-            zpool status -Hp -P "$pool" 2>/dev/null \
-                | awk -v wanted="$pool" '$1 == wanted && $2 ~ /^(ONLINE|DEGRADED|FAULTED|UNAVAIL|OFFLINE|REMOVED)$/ {print $3, $4, $5; exit}'
-        )
+        read -r zread zwrite zcksum < <(zpool status -Hp -P "$pool" 2>/dev/null | awk -v wanted="$pool" '$1 == wanted && $2 ~ /^(ONLINE|DEGRADED|FAULTED|UNAVAIL|OFFLINE|REMOVED)$/ {print $3, $4, $5; exit}')
         zread="${zread:-0}"; zwrite="${zwrite:-0}"; zcksum="${zcksum:-0}"
         if [[ "$zread" != 0 || "$zwrite" != 0 || "$zcksum" != 0 ]]; then
             status=WARN
@@ -1827,7 +1806,6 @@ smart_health_metrics() {
     local temp_cycle temp_lifetime temp_recommended temp_limit temp_over_limit
     local temp_cycle_max temp_lifetime_max temp_recommended_max temp_limit_max temp_status temp_deviation
     local reallocated pending uncorrectable crc wear spare media_errors unsafe_shutdowns error_entries
-    local smart_seen=0 smart_available=0 smart_failed=0
     local temp_display temp_status_display temp_delta_display cycle_max_display lifetime_max_display
     local recommended_max_display limit_display under_over_display
     local power_on_display power_cycles_display wear_display spare_display reallocated_display
@@ -1905,14 +1883,10 @@ $smart_output"
         [[ -n "$firmware" ]] || firmware="$(smart_field "$smart_output" "Firmware Revision")"
 
         if [[ -z "$smart_output" ]] || ! grep -qiE 'SMART|SCT Status|Critical Warning|Temperature:|Device Model:|Model Number:|Product:' <<< "$smart_output"; then
-            smart_failed=$((smart_failed + 1))
             smart_table_add_row "$device" "${model:-N/A}" "${firmware:--}" "N/A" \
                 "-" "-" "-" "-" "-" "-" "-" "-" "-" "-" "-" "-" "-" "-" "-" "-" "-" "-" "-"
             continue
         fi
-        smart_available=$((smart_available + 1))
-        smart_seen=1
-
         health="$(printf '%s\n' "$smart_output" | awk -F: '
             /SMART overall-health self-assessment test result:|SMART Health Status:/ {
                 sub(/^[^:]*:[[:space:]]*/, ""); print; exit
@@ -2038,10 +2012,7 @@ $smart_output"
             "$power_on_display" "$power_cycles_display" "$wear_display" "$spare_display" \
             "$reallocated_display" "$pending_display" "$uncorrectable_display" "$crc_display" \
             "$media_errors_display" "$unsafe_display" "$error_log_display"
-    done < <(
-        lsblk -d -n -o NAME,TYPE,TRAN 2>/dev/null \
-            | awk '$2 == "disk" {print $1 "|" $3}'
-    )
+    done < <(lsblk -d -n -o NAME,TYPE,TRAN 2>/dev/null | awk '$2 == "disk" {print $1 "|" $3}')
 
     if (( ${#SMART_TABLE_DISKS[@]} == 0 )); then
         echo "        unavailable (virtual disk, unsupported device, or insufficient permissions)"
@@ -2184,8 +2155,7 @@ network_report() {
         iface="$(basename "$path")"
         oper="$(cat "$path/operstate" 2>/dev/null || echo "unknown")"
         ip_addr="$(ip -o -4 addr show dev "$iface" 2>/dev/null | awk '{print $4}' || echo "-")"
-        ip6_addr="$(ip -o -6 addr show dev "$iface" 2>/dev/null \
-            | awk '{if (n++) printf ", "; printf "%s", $4}' || echo "-")"
+        ip6_addr="$(ip -o -6 addr show dev "$iface" 2>/dev/null | awk '{if (n++) printf ", "; printf "%s", $4}' || echo "-")"
         rx="$(cat "$path/statistics/rx_errors" 2>/dev/null || echo 0)"
         tx="$(cat "$path/statistics/tx_errors" 2>/dev/null || echo 0)"
         field "Interface" "$iface"
@@ -2210,10 +2180,8 @@ network_snapshot() {
     gateway="$(ip route 2>/dev/null | awk '/^default/ {print $3; exit}')"
     ipv6_gateway="$(ip -6 route 2>/dev/null | awk '/^default/ {print $3; exit}')"
     if [[ -n "$primary_iface" ]]; then
-        ipv4_addr="$(ip -4 addr show "$primary_iface" 2>/dev/null \
-            | awk '/inet / {print $2; exit}')"
-        ipv6_addr="$(ip -6 addr show "$primary_iface" 2>/dev/null \
-            | awk '$1 == "inet6" {print $2; exit}')"
+        ipv4_addr="$(ip -4 addr show "$primary_iface" 2>/dev/null | awk '/inet / {print $2; exit}')"
+        ipv6_addr="$(ip -6 addr show "$primary_iface" 2>/dev/null | awk '$1 == "inet6" {print $2; exit}')"
     fi
     [[ -n "$primary_iface" ]] || primary_iface="-"
     [[ -n "$ipv4_addr" ]] || ipv4_addr="-"
@@ -2234,10 +2202,8 @@ network_snapshot() {
         [[ -e "$path" ]] || continue
         iface="$(basename "$path")"
         oper="$(cat "$path/operstate" 2>/dev/null || echo unknown)"
-        ip_addr="$(ip -o -4 addr show dev "$iface" 2>/dev/null \
-            | awk '{if (n++) printf ", "; printf "%s", $4}')"
-        ip6_addr="$(ip -o -6 addr show dev "$iface" 2>/dev/null \
-            | awk '{if (n++) printf ", "; printf "%s", $4}')"
+        ip_addr="$(ip -o -4 addr show dev "$iface" 2>/dev/null | awk '{if (n++) printf ", "; printf "%s", $4}')"
+        ip6_addr="$(ip -o -6 addr show dev "$iface" 2>/dev/null | awk '{if (n++) printf ", "; printf "%s", $4}')"
         rx="$(cat "$path/statistics/rx_errors" 2>/dev/null || echo 0)"
         tx="$(cat "$path/statistics/tx_errors" 2>/dev/null || echo 0)"
         [[ -n "$ip_addr" ]] || ip_addr="-"
@@ -2427,26 +2393,23 @@ docker_volume_size_bytes() {
     local volume="$1"
     local mountpoint size_kib size_bytes
 
-    mountpoint="$(docker volume inspect -f '{{.Mountpoint}}' "$volume" \
-        2>/dev/null | head -n 1)"
+    mountpoint="$(docker volume inspect -f '{{.Mountpoint}}' "$volume" 2>/dev/null | head -n 1)"
     [[ -n "$mountpoint" && -d "$mountpoint" ]] || return 1
 
-    size_bytes="$(du -sx -B1 -- "$mountpoint" 2>/dev/null \
-        | awk 'NR == 1 {print $1; exit}')"
+    size_bytes="$(du -sx -B1 -- "$mountpoint" 2>/dev/null | awk 'NR == 1 {print $1; exit}')"
     if [[ "$size_bytes" =~ ^[0-9]+$ ]]; then
         printf '%s\n' "$size_bytes"
         return 0
     fi
 
-    size_kib="$(du -sxk -- "$mountpoint" 2>/dev/null \
-        | awk 'NR == 1 {print $1; exit}')"
+    size_kib="$(du -sxk -- "$mountpoint" 2>/dev/null | awk 'NR == 1 {print $1; exit}')"
     [[ "$size_kib" =~ ^[0-9]+$ ]] || return 1
     printf '%s\n' "$((size_kib * 1024))"
 }
 
 docker_volumes_report() {
     local rows named_rows dangling_rows total named_count anonymous_count
-    local dangling_count anonymous_dangling_count anonymous_rows
+    local anonymous_dangling_count anonymous_rows
     local name driver size_bytes total_bytes measured_count unmeasured_count
     local short_name
     local -a volume_sizes=()
@@ -2457,8 +2420,7 @@ docker_volumes_report() {
         return 0
     fi
 
-    named_rows="$(printf '%s\n' "$rows" | awk -F '\t' \
-        '$1 !~ /^[[:xdigit:]]{64}$/ {print}')"
+    named_rows="$(printf '%s\n' "$rows" | awk -F '\t' '$1 !~ /^[[:xdigit:]]{64}$/ {print}')"
     echo "    Named volumes:"
     if [[ -n "$named_rows" ]]; then
         printf "        %-48s %s\n" "NAME" "DRIVER"
@@ -2471,16 +2433,11 @@ docker_volumes_report() {
     fi
 
     total="$(printf '%s\n' "$rows" | awk 'NF {count++} END {print count + 0}')"
-    named_count="$(printf '%s\n' "$named_rows" \
-        | awk 'NF {count++} END {print count + 0}')"
+    named_count="$(printf '%s\n' "$named_rows" | awk 'NF {count++} END {print count + 0}')"
     anonymous_count=$((total - named_count))
     dangling_rows="$(docker volume ls -qf dangling=true 2>/dev/null || true)"
-    dangling_count="$(printf '%s\n' "$dangling_rows" \
-        | awk 'NF {count++} END {print count + 0}')"
-    anonymous_dangling_count="$(printf '%s\n' "$dangling_rows" \
-        | awk '$1 ~ /^[[:xdigit:]]{64}$/ {count++} END {print count + 0}')"
-    anonymous_rows="$(printf '%s\n' "$rows" \
-        | awk -F '\t' '$1 ~ /^[[:xdigit:]]{64}$/ {print $1}')"
+    anonymous_dangling_count="$(printf '%s\n' "$dangling_rows" | awk '$1 ~ /^[[:xdigit:]]{64}$/ {count++} END {print count + 0}')"
+    anonymous_rows="$(printf '%s\n' "$rows" | awk -F '\t' '$1 ~ /^[[:xdigit:]]{64}$/ {print $1}')"
 
     echo
     echo "    Anonymous volumes:"
@@ -2536,14 +2493,11 @@ docker_report() {
     fi
 
     echo "    docker version:"
-    docker version --format '    Client={{.Client.Version}} Server={{.Server.Version}}' 2>/dev/null \
-        || docker version 2>/dev/null | indent + 4 \
-        || echo "    Cannot read docker version"
+    docker version --format '    Client={{.Client.Version}} Server={{.Server.Version}}' 2>/dev/null || docker version 2>/dev/null | indent + 4 || echo "    Cannot read docker version"
 
     echo
     echo "    containers:"
-    docker ps -a --format 'table {{.ID}}\t{{.Names}}\t{{.Image}}\t{{.Status}}\t{{.Ports}}' 2>/dev/null | indent + 4 \
-        || echo "    Cannot list containers"
+    docker ps -a --format 'table {{.ID}}\t{{.Names}}\t{{.Image}}\t{{.Status}}\t{{.Ports}}' 2>/dev/null | indent + 4 || echo "    Cannot list containers"
 
     echo
     echo "    networks:"
@@ -2573,8 +2527,7 @@ docker_snapshot_report() {
 
     echo
     echo "    containers:"
-    docker ps -a --format 'table {{.ID}}\t{{.Names}}\t{{.Image}}\t{{.Status}}\t{{.Ports}}' 2>/dev/null | indent + 4 \
-        || echo "    Cannot list containers"
+    docker ps -a --format 'table {{.ID}}\t{{.Names}}\t{{.Image}}\t{{.Status}}\t{{.Ports}}' 2>/dev/null | indent + 4 || echo "    Cannot list containers"
 
     echo
     echo "    networks:"
@@ -2694,9 +2647,7 @@ docker_container_report() {
 
     echo
     echo "    environment (secrets masked):"
-    docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' "$container" 2>/dev/null \
-        | mask_secrets \
-        | indent + 4
+    docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' "$container" 2>/dev/null | mask_secrets | indent + 4
 
     echo
     echo "    process list:"
@@ -2712,11 +2663,7 @@ docker_container_report() {
 
     echo
     echo "    rootfs layers:"
-    docker inspect -f '{{range .RootFS.Layers}}{{println .}}{{end}}' "$image_id" 2>/dev/null \
-        | sed '/^$/d' \
-        | nl -w1 -s'  ' \
-        | indent + 4 \
-        || echo "    Cannot read image layers"
+    docker inspect -f '{{range .RootFS.Layers}}{{println .}}{{end}}' "$image_id" 2>/dev/null | sed '/^$/d' | nl -w1 -s'  ' | indent + 4 || echo "    Cannot read image layers"
 }
 
 run_reports() {
