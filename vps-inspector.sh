@@ -1714,6 +1714,22 @@ smart_temperature_pair_max() {
     printf '%s\n' "$1" | sed -n 's#^[^/]*/[[:space:]]*\(-\?[0-9][0-9]*\).*#\1#p'
 }
 
+smart_is_physical_disk() {
+    local disk="$1" transport="$2"
+
+    case "$disk" in
+        zd*|zvol*|dm-*|loop*|md*|nbd*|rbd*|ram*|sr*|fd*)
+            return 1
+            ;;
+    esac
+    case "$transport" in
+        ata|sata|sas|scsi|usb|nvme|mmc|fc|firewire|spi)
+            return 0
+            ;;
+    esac
+    return 1
+}
+
 smart_table_add_row() {
     local disk="$1" model="$2" firmware="$3" health="$4"
     shift 4
@@ -1790,8 +1806,9 @@ smart_health_metrics() {
         return 0
     fi
 
-    while read -r disk; do
+    while IFS='|' read -r disk transport; do
         [[ -n "$disk" ]] || continue
+        smart_is_physical_disk "$disk" "$transport" || continue
         device="/dev/$disk"
         smart_output=""
         if have smartctl; then
@@ -1959,7 +1976,10 @@ $smart_output"
             "$power_on_display" "$power_cycles_display" "$wear_display" "$spare_display" \
             "$reallocated_display" "$pending_display" "$uncorrectable_display" "$crc_display" \
             "$media_errors_display" "$unsafe_display" "$error_log_display"
-    done < <(lsblk -d -n -o NAME,TYPE 2>/dev/null | awk '$2 == "disk" {print $1}')
+    done < <(
+        lsblk -d -n -o NAME,TYPE,TRAN 2>/dev/null \
+            | awk '$2 == "disk" {print $1 "|" $3}'
+    )
 
     if (( ${#SMART_TABLE_DISKS[@]} == 0 )); then
         echo "        unavailable (virtual disk, unsupported device, or insufficient permissions)"
