@@ -1293,6 +1293,48 @@ storage_numeric_at_least() {
     awk -v value="$value" -v threshold="$threshold" 'BEGIN { exit !(value >= threshold) }'
 }
 
+zfs_physical_disk() {
+    local vdev="$1" resolved name parent
+
+    resolved="$vdev"
+    if have readlink && [[ -e "$vdev" ]]; then
+        resolved="$(readlink -f -- "$vdev" 2>/dev/null || printf '%s' "$vdev")"
+    fi
+    if have lsblk; then
+        parent="$(lsblk -ndo PKNAME "$resolved" 2>/dev/null | head -n 1)"
+        if [[ -n "$parent" ]]; then
+            printf '/dev/%s\n' "$parent"
+            return 0
+        fi
+    fi
+
+    name="${resolved##*/}"
+    case "$name" in
+        nvme*n*p[0-9]*|mmcblk*p[0-9]*) name="${name%p[0-9]*}" ;;
+        *[0-9]*) name="${name%%[0-9]*}" ;;
+    esac
+    [[ -n "$name" ]] && printf '/dev/%s\n' "$name" || printf '%s\n' N/A
+}
+
+zfs_smart_status() {
+    local disk="$1" smart_output
+
+    if ! have smartctl || [[ ! -e "$disk" ]]; then
+        printf '%s\n' N/A
+        return 0
+    fi
+    smart_output="$(smartctl -H "$disk" 2>&1 || true)"
+    if printf '%s\n' "$smart_output" | grep -qiE \
+        'SMART overall-health.*(PASSED|OK)|SMART Health Status:[[:space:]]*(OK|PASSED)'; then
+        printf '%s\n' OK
+    elif printf '%s\n' "$smart_output" | grep -qiE \
+        'SMART overall-health.*(FAILED|ERROR)|SMART Health Status:[[:space:]]*(FAILED|ERROR)|failing'; then
+        printf '%s\n' CRITICAL
+    else
+        printf '%s\n' N/A
+    fi
+}
+
 filesystem_health_metrics() {
     local source fstype target options used inode mode status xfs_errors kernel_errors
     local found=0
@@ -1522,6 +1564,10 @@ lvm_health_metrics() {
 
 zfs_health_metrics() {
     local pool state capacity fragmentation zread zwrite zcksum scan status found=0
+    local vdev vdev_state vread vwrite vcksum disk physical model smart_status vdev_status i
+    local max_vdev=4 max_disk=4 max_model=5 max_state=5 max_error=4 max_smart=5 max_status=6 max_pool=4
+    local -a zfs_pools=() zfs_vdevs=() zfs_disks=() zfs_models=() zfs_states=()
+    local -a zfs_reads=() zfs_writes=() zfs_checksums=() zfs_smarts=() zfs_statuses=()
 
     if ! have zpool; then
         echo "    ZFS health: none"
@@ -1574,9 +1620,65 @@ zfs_health_metrics() {
             "$pool" "$state" "${capacity:-N/A}" "${fragmentation:-N/A}" \
             "$zread" "$zwrite" "$zcksum" "$status"
         [[ -n "$scan" ]] && storage_kv "scrub" "$scan"
+
+        while IFS='|' read -r vdev vdev_state vread vwrite vcksum; do
+            [[ "$vdev" == /* ]] || continue
+            physical="$(zfs_physical_disk "$vdev")"
+            disk="${physical##*/}"
+            model="$(device_model "$disk")"
+            smart_status="$(zfs_smart_status "$physical")"
+            vread="${vread:-0}"; vwrite="${vwrite:-0}"; vcksum="${vcksum:-0}"
+            vdev_status=OK
+            case "$vdev_state" in
+                ONLINE) ;;
+                DEGRADED) vdev_status=WARN; storage_raise WARN ;;
+                FAULTED|UNAVAIL|OFFLINE|REMOVED) vdev_status=CRITICAL; storage_raise CRITICAL ;;
+                *) vdev_status=WARN; storage_raise WARN ;;
+            esac
+            if [[ "$vread" != 0 || "$vwrite" != 0 || "$vcksum" != 0 ]]; then
+                [[ "$vdev_status" == OK ]] && vdev_status=WARN
+                storage_raise WARN
+            fi
+            vdev="${vdev##*/}"
+            disk="${physical:-N/A}"
+            model="${model:-N/A}"
+            zfs_pools+=("$pool"); zfs_vdevs+=("$vdev"); zfs_disks+=("$disk")
+            zfs_models+=("$model"); zfs_states+=("${vdev_state:-N/A}")
+            zfs_reads+=("$vread"); zfs_writes+=("$vwrite"); zfs_checksums+=("$vcksum")
+            zfs_smarts+=("$smart_status"); zfs_statuses+=("$vdev_status")
+            ((${#vdev} > max_vdev)) && max_vdev=${#vdev}
+            ((${#disk} > max_disk)) && max_disk=${#disk}
+            ((${#model} > max_model)) && max_model=${#model}
+            ((${#vdev_state} > max_state)) && max_state=${#vdev_state}
+            ((${#pool} > max_pool)) && max_pool=${#pool}
+            ((${#vread} > max_error)) && max_error=${#vread}
+            ((${#vwrite} > max_error)) && max_error=${#vwrite}
+            ((${#vcksum} > max_error)) && max_error=${#vcksum}
+            ((${#smart_status} > max_smart)) && max_smart=${#smart_status}
+            ((${#vdev_status} > max_status)) && max_status=${#vdev_status}
+        done < <(
+            zpool status -Hp -P "$pool" 2>/dev/null \
+                | awk '$1 ~ /^\// && $2 ~ /^(ONLINE|DEGRADED|FAULTED|UNAVAIL|OFFLINE|REMOVED)$/ {print $1 "|" $2 "|" $3 "|" $4 "|" $5}'
+        )
     done < <(zpool list -H -p -o name,health,capacity,fragmentation 2>/dev/null | sed 's/[[:space:]][[:space:]]*/|/g')
 
     (( found > 0 )) || echo "    ZFS health: none"
+    if (( ${#zfs_vdevs[@]} > 0 )); then
+        echo
+        echo "    ZFS vdev health:"
+        printf "        %-*s  %-*s  %-*s  %-*s  %-*s  %-*s  %-*s  %-*s  %-*s  %-*s\n" \
+            "$max_pool" POOL "$max_vdev" VDEV "$max_disk" DISK "$max_model" MODEL \
+            "$max_state" STATE "$max_error" READ "$max_error" WRITE "$max_error" CHECKSUM \
+            "$max_smart" SMART "$max_status" STATUS
+        for ((i = 0; i < ${#zfs_vdevs[@]}; i++)); do
+            printf "        %-*s  %-*s  %-*s  %-*s  %-*s  %-*s  %-*s  %-*s  %-*s  %-*s\n" \
+                "$max_pool" "${zfs_pools[i]}" "$max_vdev" "${zfs_vdevs[i]}" \
+                "$max_disk" "${zfs_disks[i]}" "$max_model" "${zfs_models[i]}" \
+                "$max_state" "${zfs_states[i]}" "$max_error" "${zfs_reads[i]}" \
+                "$max_error" "${zfs_writes[i]}" "$max_error" "${zfs_checksums[i]}" \
+                "$max_smart" "${zfs_smarts[i]}" "$max_status" "${zfs_statuses[i]}"
+        done
+    fi
 }
 
 smart_field() {
