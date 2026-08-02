@@ -679,10 +679,13 @@ storage_devices_table() {
         [[ -n "$name" ]] || continue
 
         if [[ "$type" == disk ]]; then
-            if [[ -n "$vendor" && -n "$model" ]]; then
-                model="$vendor $model"
-            elif [[ -z "$model" ]]; then
-                model="$(device_model "$name")"
+            if [[ -z "$model" ]]; then
+                model="$vendor"
+                [[ -n "$model" ]] || model="$(device_model "$name")"
+            elif [[ "$vendor" == ATA || "$vendor" == NVMe || "$vendor" == SCSI ]]; then
+                # VENDOR is a transport/protocol label on some lsblk versions,
+                # not part of the human-readable disk model.
+                :
             fi
         fi
         free_space="-"
@@ -1293,14 +1296,15 @@ storage_numeric_at_least() {
 filesystem_health_metrics() {
     local source fstype target options used inode mode status xfs_errors kernel_errors
     local found=0
+    local used_display inode_display
+    local max_target=6 max_fstype=6 max_status=6 max_used=4 max_inode=5 max_mode=4 max_kernel=13 max_source=6 i
+    local -a fs_targets=() fs_types=() fs_statuses=() fs_used=() fs_inode=() fs_modes=() fs_kernel=() fs_sources=()
 
     echo "    Filesystem health:"
     if ! have findmnt; then
         echo "        unavailable (findmnt not found)"
         return 0
     fi
-    printf "        %-32s %-10s %-9s %-8s %-8s %-6s %-14s %s\n" \
-        "TARGET" "FSTYPE" "STATUS" "USED" "INODE" "MODE" "KERNEL ERRORS" "SOURCE"
 
     while read -r source fstype target options; do
         [[ -n "$target" && -n "$fstype" ]] || continue
@@ -1343,19 +1347,48 @@ filesystem_health_metrics() {
             (( xfs_errors > 0 )) && storage_raise WARN
         fi
 
-        printf "        %-32s %-10s %-9s %-8s %-8s %-6s %-14s %s\n" \
-            "$target" "$fstype" "$status" "${used}%" "${inode}%" "$mode" \
-            "$kernel_errors" "$source"
+        used_display="-"; [[ "$used" != N/A ]] && used_display="${used}%"
+        inode_display="-"; [[ "$inode" != N/A ]] && inode_display="${inode}%"
+        fs_targets+=("$target"); fs_types+=("$fstype"); fs_statuses+=("$status")
+        fs_used+=("$used_display"); fs_inode+=("$inode_display"); fs_modes+=("$mode")
+        fs_kernel+=("$kernel_errors"); fs_sources+=("$source")
+        ((${#target} > max_target)) && max_target=${#target}
+        ((${#fstype} > max_fstype)) && max_fstype=${#fstype}
+        ((${#status} > max_status)) && max_status=${#status}
+        ((${#used_display} > max_used)) && max_used=${#used_display}
+        ((${#inode_display} > max_inode)) && max_inode=${#inode_display}
+        ((${#mode} > max_mode)) && max_mode=${#mode}
+        ((${#kernel_errors} > max_kernel)) && max_kernel=${#kernel_errors}
+        ((${#source} > max_source)) && max_source=${#source}
     done < <(findmnt -rn -o SOURCE,FSTYPE,TARGET,OPTIONS 2>/dev/null)
 
-    (( found > 0 )) || echo "        none"
+    if (( found == 0 )); then
+        echo "        none"
+        return 0
+    fi
+
+    printf "        %-*s  %-*s  %-*s  %-*s  %-*s  %-*s  %-*s  %s\n" \
+        "$max_target" TARGET "$max_fstype" FSTYPE "$max_status" STATUS "$max_used" USED \
+        "$max_inode" INODE "$max_mode" MODE "$max_kernel" "KERNEL ERRORS" SOURCE
+    for ((i = 0; i < ${#fs_targets[@]}; i++)); do
+        printf "        %-*s  %-*s  %-*s  %-*s  %-*s  %-*s  %-*s  %s\n" \
+            "$max_target" "${fs_targets[i]}" "$max_fstype" "${fs_types[i]}" \
+            "$max_status" "${fs_statuses[i]}" "$max_used" "${fs_used[i]}" \
+            "$max_inode" "${fs_inode[i]}" "$max_mode" "${fs_modes[i]}" \
+            "$max_kernel" "${fs_kernel[i]}" "${fs_sources[i]}"
+    done
 }
 
 lvm_health_metrics() {
     local pv_name pv_attr pv_size pv_free
     local vg_name vg_attr vg_size vg_free
     local lv_path lv_attr lv_size pool_lv data_percent metadata_percent
-    local found=0 status
+    local found=0 status i
+    local max_pv=2 max_vg=2 max_lv=2 max_attr=4 max_size=4 max_free=4 max_status=8
+    local max_pool=4 max_data=4 max_meta=4
+    local -a pv_names=() pv_attrs=() pv_sizes=() pv_frees=() pv_statuses=()
+    local -a vg_names=() vg_attrs=() vg_sizes=() vg_frees=() vg_statuses=()
+    local -a lv_paths=() lv_attrs=() lv_sizes=() lv_pools=() lv_data=() lv_meta=() lv_statuses=()
 
     if ! have pvs && ! have vgs && ! have lvs; then
         echo "    LVM health: none"
@@ -1364,7 +1397,6 @@ lvm_health_metrics() {
     echo "    LVM health:"
 
     if have pvs; then
-        printf "        %-26s %-10s %-12s %-12s %-8s\n" "PV" "ATTR" "SIZE" "FREE" "STATUS"
         while IFS='|' read -r pv_name pv_attr pv_size pv_free; do
             pv_name="$(printf '%s' "$pv_name" | storage_trim)"
             pv_attr="$(printf '%s' "$pv_attr" | storage_trim)"
@@ -1377,14 +1409,28 @@ lvm_health_metrics() {
                 status=CRITICAL
                 storage_raise CRITICAL
             fi
-            printf "        %-26s %-10s %-12s %-12s %-8s\n" \
-                "$pv_name" "${pv_attr:-N/A}" "${pv_size:-N/A}" \
-                "${pv_free:-N/A}" "$status"
+            pv_name="${pv_name:-N/A}"; pv_attr="${pv_attr:-N/A}"
+            pv_size="${pv_size:-N/A}"; pv_free="${pv_free:-N/A}"
+            pv_names+=("$pv_name"); pv_attrs+=("$pv_attr"); pv_sizes+=("$pv_size")
+            pv_frees+=("$pv_free"); pv_statuses+=("$status")
+            ((${#pv_name} > max_pv)) && max_pv=${#pv_name}
+            ((${#pv_attr} > max_attr)) && max_attr=${#pv_attr}
+            ((${#pv_size} > max_size)) && max_size=${#pv_size}
+            ((${#pv_free} > max_free)) && max_free=${#pv_free}
         done < <(pvs --noheadings --separator '|' --options pv_name,pv_attr,pv_size,pv_free 2>/dev/null)
+        if (( ${#pv_names[@]} > 0 )); then
+            printf "        %-*s  %-*s  %-*s  %-*s  %-*s\n" \
+                "$max_pv" PV "$max_attr" ATTR "$max_size" SIZE "$max_free" FREE "$max_status" STATUS
+            for ((i = 0; i < ${#pv_names[@]}; i++)); do
+                printf "        %-*s  %-*s  %-*s  %-*s  %-*s\n" \
+                    "$max_pv" "${pv_names[i]}" "$max_attr" "${pv_attrs[i]}" \
+                    "$max_size" "${pv_sizes[i]}" "$max_free" "${pv_frees[i]}" \
+                    "$max_status" "${pv_statuses[i]}"
+            done
+        fi
     fi
 
     if have vgs; then
-        printf "        %-26s %-10s %-12s %-12s %-8s\n" "VG" "ATTR" "SIZE" "FREE" "STATUS"
         while IFS='|' read -r vg_name vg_attr vg_size vg_free; do
             vg_name="$(printf '%s' "$vg_name" | storage_trim)"
             vg_attr="$(printf '%s' "$vg_attr" | storage_trim)"
@@ -1397,15 +1443,28 @@ lvm_health_metrics() {
                 status=CRITICAL
                 storage_raise CRITICAL
             fi
-            printf "        %-26s %-10s %-12s %-12s %-8s\n" \
-                "$vg_name" "${vg_attr:-N/A}" "${vg_size:-N/A}" \
-                "${vg_free:-N/A}" "$status"
+            vg_name="${vg_name:-N/A}"; vg_attr="${vg_attr:-N/A}"
+            vg_size="${vg_size:-N/A}"; vg_free="${vg_free:-N/A}"
+            vg_names+=("$vg_name"); vg_attrs+=("$vg_attr"); vg_sizes+=("$vg_size")
+            vg_frees+=("$vg_free"); vg_statuses+=("$status")
+            ((${#vg_name} > max_vg)) && max_vg=${#vg_name}
+            ((${#vg_attr} > max_attr)) && max_attr=${#vg_attr}
+            ((${#vg_size} > max_size)) && max_size=${#vg_size}
+            ((${#vg_free} > max_free)) && max_free=${#vg_free}
         done < <(vgs --noheadings --separator '|' --options vg_name,vg_attr,vg_size,vg_free 2>/dev/null)
+        if (( ${#vg_names[@]} > 0 )); then
+            printf "        %-*s  %-*s  %-*s  %-*s  %-*s\n" \
+                "$max_vg" VG "$max_attr" ATTR "$max_size" SIZE "$max_free" FREE "$max_status" STATUS
+            for ((i = 0; i < ${#vg_names[@]}; i++)); do
+                printf "        %-*s  %-*s  %-*s  %-*s  %-*s\n" \
+                    "$max_vg" "${vg_names[i]}" "$max_attr" "${vg_attrs[i]}" \
+                    "$max_size" "${vg_sizes[i]}" "$max_free" "${vg_frees[i]}" \
+                    "$max_status" "${vg_statuses[i]}"
+            done
+        fi
     fi
 
     if have lvs; then
-        printf "        %-30s %-10s %-12s %-18s %-12s %-12s %-8s\n" \
-            "LV" "ATTR" "SIZE" "POOL" "DATA" "META" "STATUS"
         while IFS='|' read -r lv_path lv_attr lv_size pool_lv data_percent metadata_percent; do
             lv_path="$(printf '%s' "$lv_path" | storage_trim)"
             lv_attr="$(printf '%s' "$lv_attr" | storage_trim)"
@@ -1431,10 +1490,31 @@ lvm_health_metrics() {
                 storage_raise WARN
             fi
 
-            printf "        %-30s %-10s %-12s %-18s %-12s %-12s %-8s\n" \
-                "$lv_path" "${lv_attr:-N/A}" "${lv_size:-N/A}" \
-                "${pool_lv:--}" "${data_percent:--}" "${metadata_percent:--}" "$status"
+            lv_path="${lv_path:-N/A}"; lv_attr="${lv_attr:-N/A}"
+            lv_size="${lv_size:-N/A}"; pool_lv="${pool_lv:--}"
+            data_percent="${data_percent:--}"; metadata_percent="${metadata_percent:--}"
+            lv_paths+=("$lv_path"); lv_attrs+=("$lv_attr"); lv_sizes+=("$lv_size")
+            lv_pools+=("$pool_lv"); lv_data+=("$data_percent"); lv_meta+=("$metadata_percent")
+            lv_statuses+=("$status")
+            ((${#lv_path} > max_lv)) && max_lv=${#lv_path}
+            ((${#lv_attr} > max_attr)) && max_attr=${#lv_attr}
+            ((${#lv_size} > max_size)) && max_size=${#lv_size}
+            ((${#pool_lv} > max_pool)) && max_pool=${#pool_lv}
+            ((${#data_percent} > max_data)) && max_data=${#data_percent}
+            ((${#metadata_percent} > max_meta)) && max_meta=${#metadata_percent}
         done < <(lvs --noheadings --separator '|' --options lv_path,lv_attr,lv_size,pool_lv,data_percent,metadata_percent 2>/dev/null)
+        if (( ${#lv_paths[@]} > 0 )); then
+            printf "        %-*s  %-*s  %-*s  %-*s  %-*s  %-*s  %-*s\n" \
+                "$max_lv" LV "$max_attr" ATTR "$max_size" SIZE "$max_pool" POOL \
+                "$max_data" DATA "$max_meta" META "$max_status" STATUS
+            for ((i = 0; i < ${#lv_paths[@]}; i++)); do
+                printf "        %-*s  %-*s  %-*s  %-*s  %-*s  %-*s  %-*s\n" \
+                    "$max_lv" "${lv_paths[i]}" "$max_attr" "${lv_attrs[i]}" \
+                    "$max_size" "${lv_sizes[i]}" "$max_pool" "${lv_pools[i]}" \
+                    "$max_data" "${lv_data[i]}" "$max_meta" "${lv_meta[i]}" \
+                    "$max_status" "${lv_statuses[i]}"
+            done
+        fi
     fi
 
     (( found > 0 )) || echo "    LVM health: none"
@@ -1791,11 +1871,11 @@ $smart_output"
     done
 
     echo "    SMART overview:"
-    printf "        %-*s  %-*s  %-*s  %-8s  %-8s  %-10s  %-9s  %-10s  %-10s  %-10s  %-8s  %s\n" \
+    printf "        %-*s  %-*s  %-*s  %-10s  %-10s  %-12s  %-12s  %-12s  %-14s  %-17s  %-8s  %-12s\n" \
         "$max_smart_disk" DISK "$max_smart_model" MODEL "$max_smart_firmware" FIRMWARE \
         HEALTH TEMP TEMP_STATUS TEMP_DELTA CYCLE_MAX LIFETIME_MAX RECOMMENDED_MAX LIMIT UNDER_OVER
     for ((i = 0; i < ${#SMART_TABLE_DISKS[@]}; i++)); do
-        printf "        %-*s  %-*s  %-*s  %-8s  %-8s  %-10s  %-9s  %-10s  %-10s  %-10s  %-8s  %s\n" \
+        printf "        %-*s  %-*s  %-*s  %-10s  %-10s  %-12s  %-12s  %-12s  %-14s  %-17s  %-8s  %-12s\n" \
             "$max_smart_disk" "${SMART_TABLE_DISKS[i]}" "$max_smart_model" "${SMART_TABLE_MODELS[i]}" \
             "$max_smart_firmware" "${SMART_TABLE_FIRMWARES[i]}" "${SMART_TABLE_HEALTHS[i]}" \
             "${SMART_TABLE_TEMPS[i]}" "${SMART_TABLE_TEMP_STATUS[i]}" "${SMART_TABLE_TEMP_DELTAS[i]}" \
@@ -1805,10 +1885,10 @@ $smart_output"
 
     echo
     echo "    SMART lifetime and error counters:"
-    printf "        %-*s  %-12s  %-13s  %-8s  %-8s  %-10s  %-8s  %-10s  %-8s  %-10s  %-12s  %s\n" \
+    printf "        %-*s  %-14s  %-15s  %-8s  %-8s  %-10s  %-8s  %-14s  %-8s  %-12s  %-18s  %-10s\n" \
         "$max_smart_disk" DISK POWER_ON POWER_CYCLES WEAR SPARE REALLOC PENDING UNCORRECTABLE CRC MEDIA_ERRORS UNSAFE_SHUTDOWNS ERROR_LOG
     for ((i = 0; i < ${#SMART_TABLE_DISKS[@]}; i++)); do
-        printf "        %-*s  %-12s  %-13s  %-8s  %-8s  %-10s  %-8s  %-10s  %-8s  %-10s  %-12s  %s\n" \
+        printf "        %-*s  %-14s  %-15s  %-8s  %-8s  %-10s  %-8s  %-14s  %-8s  %-12s  %-18s  %-10s\n" \
             "$max_smart_disk" "${SMART_TABLE_DISKS[i]}" "${SMART_TABLE_POWER_ON[i]}" \
             "${SMART_TABLE_POWER_CYCLES[i]}" "${SMART_TABLE_WEAR[i]}" "${SMART_TABLE_SPARE[i]}" \
             "${SMART_TABLE_REALLOCATED[i]}" "${SMART_TABLE_PENDING[i]}" "${SMART_TABLE_UNCORRECTABLE[i]}" \
