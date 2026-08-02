@@ -1532,12 +1532,71 @@ smart_temperature_pair_max() {
     printf '%s\n' "$1" | sed -n 's#^[^/]*/[[:space:]]*\(-\?[0-9][0-9]*\).*#\1#p'
 }
 
+smart_table_add_row() {
+    local disk="$1" model="$2" firmware="$3" health="$4"
+    shift 4
+    SMART_TABLE_DISKS+=("$disk")
+    SMART_TABLE_MODELS+=("$model")
+    SMART_TABLE_FIRMWARES+=("$firmware")
+    SMART_TABLE_HEALTHS+=("$health")
+    SMART_TABLE_TEMPS+=("$1")
+    SMART_TABLE_TEMP_STATUS+=("$2")
+    SMART_TABLE_TEMP_DELTAS+=("$3")
+    SMART_TABLE_CYCLE_MAX+=("$4")
+    SMART_TABLE_LIFETIME_MAX+=("$5")
+    SMART_TABLE_RECOMMENDED_MAX+=("$6")
+    SMART_TABLE_LIMITS+=("$7")
+    SMART_TABLE_UNDER_OVER+=("$8")
+    SMART_TABLE_POWER_ON+=("$9")
+    shift 9
+    SMART_TABLE_POWER_CYCLES+=("$1")
+    SMART_TABLE_WEAR+=("$2")
+    SMART_TABLE_SPARE+=("$3")
+    SMART_TABLE_REALLOCATED+=("$4")
+    SMART_TABLE_PENDING+=("$5")
+    SMART_TABLE_UNCORRECTABLE+=("$6")
+    SMART_TABLE_CRC+=("$7")
+    SMART_TABLE_MEDIA_ERRORS+=("$8")
+    SMART_TABLE_UNSAFE_SHUTDOWNS+=("$9")
+    shift 9
+    SMART_TABLE_ERROR_LOG+=("$1")
+}
+
 smart_health_metrics() {
     local disk device smart_output smart_sct nvme_info model firmware health temperature hours cycles
     local temp_cycle temp_lifetime temp_recommended temp_limit temp_over_limit
     local temp_cycle_max temp_lifetime_max temp_recommended_max temp_limit_max temp_status temp_deviation
     local reallocated pending uncorrectable crc wear spare media_errors unsafe_shutdowns error_entries
     local smart_seen=0 smart_available=0 smart_failed=0
+    local temp_display temp_status_display temp_delta_display cycle_max_display lifetime_max_display
+    local recommended_max_display limit_display under_over_display
+    local power_on_display power_cycles_display wear_display spare_display reallocated_display
+    local pending_display uncorrectable_display crc_display media_errors_display unsafe_display error_log_display
+    local max_smart_disk=4 max_smart_model=5 max_smart_firmware=8 i
+
+    SMART_TABLE_DISKS=()
+    SMART_TABLE_MODELS=()
+    SMART_TABLE_FIRMWARES=()
+    SMART_TABLE_HEALTHS=()
+    SMART_TABLE_TEMPS=()
+    SMART_TABLE_TEMP_STATUS=()
+    SMART_TABLE_TEMP_DELTAS=()
+    SMART_TABLE_CYCLE_MAX=()
+    SMART_TABLE_LIFETIME_MAX=()
+    SMART_TABLE_RECOMMENDED_MAX=()
+    SMART_TABLE_LIMITS=()
+    SMART_TABLE_UNDER_OVER=()
+    SMART_TABLE_POWER_ON=()
+    SMART_TABLE_POWER_CYCLES=()
+    SMART_TABLE_WEAR=()
+    SMART_TABLE_SPARE=()
+    SMART_TABLE_REALLOCATED=()
+    SMART_TABLE_PENDING=()
+    SMART_TABLE_UNCORRECTABLE=()
+    SMART_TABLE_CRC=()
+    SMART_TABLE_MEDIA_ERRORS=()
+    SMART_TABLE_UNSAFE_SHUTDOWNS=()
+    SMART_TABLE_ERROR_LOG=()
 
     echo "    SMART disk health:"
     if ! have lsblk; then
@@ -1586,6 +1645,8 @@ $smart_output"
 
         if [[ -z "$smart_output" ]] || ! grep -qiE 'SMART|SCT Status|Critical Warning|Temperature:|Device Model:|Model Number:|Product:' <<< "$smart_output"; then
             smart_failed=$((smart_failed + 1))
+            smart_table_add_row "$device" "${model:-N/A}" "${firmware:--}" "N/A" \
+                "-" "-" "-" "-" "-" "-" "-" "-" "-" "-" "-" "-" "-" "-" "-" "-" "-" "-" "-"
             continue
         fi
         smart_available=$((smart_available + 1))
@@ -1601,7 +1662,9 @@ $smart_output"
             [[ "$health" == 0 ]] && health=OK
             [[ "$health" != OK && -n "$health" ]] && health=WARN
         fi
-        if grep -qiE 'FAILED|CRITICAL|read only|media error' <<< "$health"; then
+        if [[ -z "$health" ]]; then
+            health=N/A
+        elif grep -qiE 'FAILED|CRITICAL|read only|media error' <<< "$health"; then
             storage_raise CRITICAL
             health=CRITICAL
         elif [[ -n "$health" ]] && ! grep -qiE 'PASSED|OK|^0$' <<< "$health"; then
@@ -1693,39 +1756,65 @@ $smart_output"
             storage_raise WARN
         fi
 
-        echo
-        storage_kv "disk" "$device"
-        storage_kv "model" "${model:-N/A}"
-        [[ -n "$firmware" ]] && storage_kv "firmware" "$firmware"
-        storage_kv "health" "$health"
-        if [[ -n "$temperature" ]]; then
-            storage_kv "temp" "${temperature}C"
-            storage_kv "temp_status" "$temp_status"
-            [[ -n "$temp_deviation" ]] && storage_kv "temp_delta" "$(printf "%+dC" "$temp_deviation")"
-            [[ -n "$temp_cycle_max" ]] && storage_kv "cycle_max" "${temp_cycle_max}C"
-            [[ -n "$temp_lifetime_max" ]] && storage_kv "lifetime_max" "${temp_lifetime_max}C"
-            [[ -n "$temp_recommended_max" ]] && storage_kv "recommended_max" "${temp_recommended_max}C"
-            [[ -n "$temp_limit_max" ]] && storage_kv "limit" "${temp_limit_max}C"
-            [[ -n "$temp_over_limit" ]] && storage_kv "under_over" "$temp_over_limit"
-        fi
-        [[ -n "$hours" ]] && storage_kv "power_on" "${hours}h"
-        [[ -n "$cycles" ]] && storage_kv "power_cycles" "$cycles"
-        [[ -n "$wear" ]] && storage_kv "wear" "$wear"
-        [[ -n "$spare" ]] && storage_kv "spare" "$spare"
-        [[ -n "$reallocated" ]] && storage_kv "reallocated" "$reallocated"
-        [[ -n "$pending" ]] && storage_kv "pending" "$pending"
-        [[ -n "$uncorrectable" ]] && storage_kv "uncorrectable" "$uncorrectable"
-        [[ -n "$crc" ]] && storage_kv "crc" "$crc"
-        [[ -n "$media_errors" ]] && storage_kv "media_errors" "$media_errors"
-        [[ -n "$unsafe_shutdowns" ]] && storage_kv "unsafe_shutdowns" "$unsafe_shutdowns"
-        [[ -n "$error_entries" ]] && storage_kv "error_log" "$error_entries"
+        temp_display="-"; [[ -n "$temperature" ]] && temp_display="${temperature}C"
+        temp_status_display="-"; [[ -n "$temperature" ]] && temp_status_display="$temp_status"
+        temp_delta_display="-"; [[ -n "$temp_deviation" ]] && temp_delta_display="$(printf "%+dC" "$temp_deviation")"
+        cycle_max_display="-"; [[ -n "$temp_cycle_max" ]] && cycle_max_display="${temp_cycle_max}C"
+        lifetime_max_display="-"; [[ -n "$temp_lifetime_max" ]] && lifetime_max_display="${temp_lifetime_max}C"
+        recommended_max_display="-"; [[ -n "$temp_recommended_max" ]] && recommended_max_display="${temp_recommended_max}C"
+        limit_display="-"; [[ -n "$temp_limit_max" ]] && limit_display="${temp_limit_max}C"
+        under_over_display="${temp_over_limit:--}"
+        power_on_display="${hours:--}"; [[ -n "$hours" ]] && power_on_display="${hours}h"
+        power_cycles_display="${cycles:--}"
+        wear_display="${wear:--}"; spare_display="${spare:--}"
+        reallocated_display="${reallocated:--}"; pending_display="${pending:--}"
+        uncorrectable_display="${uncorrectable:--}"; crc_display="${crc:--}"
+        media_errors_display="${media_errors:--}"; unsafe_display="${unsafe_shutdowns:--}"
+        error_log_display="${error_entries:--}"
+        smart_table_add_row "$device" "${model:-N/A}" "${firmware:--}" "$health" \
+            "$temp_display" "$temp_status_display" "$temp_delta_display" "$cycle_max_display" \
+            "$lifetime_max_display" "$recommended_max_display" "$limit_display" "$under_over_display" \
+            "$power_on_display" "$power_cycles_display" "$wear_display" "$spare_display" \
+            "$reallocated_display" "$pending_display" "$uncorrectable_display" "$crc_display" \
+            "$media_errors_display" "$unsafe_display" "$error_log_display"
     done < <(lsblk -d -n -o NAME,TYPE 2>/dev/null | awk '$2 == "disk" {print $1}')
 
-    if (( smart_seen == 0 )); then
+    if (( ${#SMART_TABLE_DISKS[@]} == 0 )); then
         echo "        unavailable (virtual disk, unsupported device, or insufficient permissions)"
-    elif (( smart_failed > 0 )); then
-        echo "        unavailable disks: $smart_failed"
+        return 0
     fi
+
+    for ((i = 0; i < ${#SMART_TABLE_DISKS[@]}; i++)); do
+        ((${#SMART_TABLE_DISKS[i]} > max_smart_disk)) && max_smart_disk=${#SMART_TABLE_DISKS[i]}
+        ((${#SMART_TABLE_MODELS[i]} > max_smart_model)) && max_smart_model=${#SMART_TABLE_MODELS[i]}
+        ((${#SMART_TABLE_FIRMWARES[i]} > max_smart_firmware)) && max_smart_firmware=${#SMART_TABLE_FIRMWARES[i]}
+    done
+
+    echo "    SMART overview:"
+    printf "        %-*s  %-*s  %-*s  %-8s  %-8s  %-10s  %-9s  %-10s  %-10s  %-10s  %-8s  %s\n" \
+        "$max_smart_disk" DISK "$max_smart_model" MODEL "$max_smart_firmware" FIRMWARE \
+        HEALTH TEMP TEMP_STATUS TEMP_DELTA CYCLE_MAX LIFETIME_MAX RECOMMENDED_MAX LIMIT UNDER_OVER
+    for ((i = 0; i < ${#SMART_TABLE_DISKS[@]}; i++)); do
+        printf "        %-*s  %-*s  %-*s  %-8s  %-8s  %-10s  %-9s  %-10s  %-10s  %-10s  %-8s  %s\n" \
+            "$max_smart_disk" "${SMART_TABLE_DISKS[i]}" "$max_smart_model" "${SMART_TABLE_MODELS[i]}" \
+            "$max_smart_firmware" "${SMART_TABLE_FIRMWARES[i]}" "${SMART_TABLE_HEALTHS[i]}" \
+            "${SMART_TABLE_TEMPS[i]}" "${SMART_TABLE_TEMP_STATUS[i]}" "${SMART_TABLE_TEMP_DELTAS[i]}" \
+            "${SMART_TABLE_CYCLE_MAX[i]}" "${SMART_TABLE_LIFETIME_MAX[i]}" \
+            "${SMART_TABLE_RECOMMENDED_MAX[i]}" "${SMART_TABLE_LIMITS[i]}" "${SMART_TABLE_UNDER_OVER[i]}"
+    done
+
+    echo
+    echo "    SMART lifetime and error counters:"
+    printf "        %-*s  %-12s  %-13s  %-8s  %-8s  %-10s  %-8s  %-10s  %-8s  %-10s  %-12s  %s\n" \
+        "$max_smart_disk" DISK POWER_ON POWER_CYCLES WEAR SPARE REALLOC PENDING UNCORRECTABLE CRC MEDIA_ERRORS UNSAFE_SHUTDOWNS ERROR_LOG
+    for ((i = 0; i < ${#SMART_TABLE_DISKS[@]}; i++)); do
+        printf "        %-*s  %-12s  %-13s  %-8s  %-8s  %-10s  %-8s  %-10s  %-8s  %-10s  %-12s  %s\n" \
+            "$max_smart_disk" "${SMART_TABLE_DISKS[i]}" "${SMART_TABLE_POWER_ON[i]}" \
+            "${SMART_TABLE_POWER_CYCLES[i]}" "${SMART_TABLE_WEAR[i]}" "${SMART_TABLE_SPARE[i]}" \
+            "${SMART_TABLE_REALLOCATED[i]}" "${SMART_TABLE_PENDING[i]}" "${SMART_TABLE_UNCORRECTABLE[i]}" \
+            "${SMART_TABLE_CRC[i]}" "${SMART_TABLE_MEDIA_ERRORS[i]}" \
+            "${SMART_TABLE_UNSAFE_SHUTDOWNS[i]}" "${SMART_TABLE_ERROR_LOG[i]}"
+    done
 }
 
 storage_health_report() {
