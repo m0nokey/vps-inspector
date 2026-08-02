@@ -1594,8 +1594,10 @@ zfs_health_metrics() {
     local pool state capacity fragmentation zread zwrite zcksum scan status found=0
     local vdev vdev_state vread vwrite vcksum disk physical model smart_status vdev_status i
     local max_vdev=4 max_disk=4 max_model=5 max_state=5 max_error=4 max_smart=5 max_status=6 max_pool=4
+    local max_scan_pool=4
     local -a zfs_pools=() zfs_vdevs=() zfs_disks=() zfs_models=() zfs_states=()
     local -a zfs_reads=() zfs_writes=() zfs_checksums=() zfs_smarts=() zfs_statuses=()
+    local -a zfs_scan_pools=() zfs_scans=()
 
     if ! have zpool; then
         echo "    ZFS health: none"
@@ -1603,7 +1605,7 @@ zfs_health_metrics() {
     fi
     echo "    ZFS health:"
     echo
-    echo "        Pools:"
+    echo "        Pool summary:"
     printf "        %-24s %-12s %-12s %-14s %-10s %-10s %-10s %-8s\n" \
         "POOL" "STATE" "CAPACITY" "FRAGMENTATION" "READ" "WRITE" "CHECKSUM" "STATUS"
 
@@ -1649,7 +1651,10 @@ zfs_health_metrics() {
         printf "        %-24s %-12s %-12s %-14s %-10s %-10s %-10s %-8s\n" \
             "$pool" "$state" "${capacity:-N/A}" "${fragmentation:-N/A}" \
             "$zread" "$zwrite" "$zcksum" "$status"
-        [[ -n "$scan" ]] && storage_kv "scrub" "$scan"
+        if [[ -n "$scan" ]]; then
+            zfs_scan_pools+=("$pool"); zfs_scans+=("$scan")
+            ((${#pool} > max_scan_pool)) && max_scan_pool=${#pool}
+        fi
 
         while IFS='|' read -r vdev vdev_state vread vwrite vcksum; do
             physical="$(zfs_physical_disk "$vdev")"
@@ -1686,9 +1691,11 @@ zfs_health_metrics() {
             ((${#smart_status} > max_smart)) && max_smart=${#smart_status}
             ((${#vdev_status} > max_status)) && max_status=${#vdev_status}
         done < <(
-            zpool status -Hp -P "$pool" 2>/dev/null \
+            zpool status -P "$pool" 2>/dev/null \
                 | awk -v wanted="$pool" '
-                    $1 != wanted &&
+                    /config:/ { in_config=1; next }
+                    /errors:/ { in_config=0 }
+                    in_config && $1 != wanted &&
                     $1 !~ /^(mirror|raidz|draid|spare|logs|cache|special)/ &&
                     $2 ~ /^(ONLINE|DEGRADED|FAULTED|UNAVAIL|OFFLINE|REMOVED)$/ &&
                     $3 ~ /^[0-9]+$/ && $4 ~ /^[0-9]+$/ && $5 ~ /^[0-9]+$/ {
@@ -1699,6 +1706,14 @@ zfs_health_metrics() {
     done < <(zpool list -H -p -o name,health,capacity,fragmentation 2>/dev/null | sed 's/[[:space:]][[:space:]]*/|/g')
 
     (( found > 0 )) || echo "    ZFS health: none"
+    if (( ${#zfs_scan_pools[@]} > 0 )); then
+        echo
+        echo "        Last scrub/resilver:"
+        printf "        %-*s  %s\n" "$max_scan_pool" POOL SCAN
+        for ((i = 0; i < ${#zfs_scan_pools[@]}; i++)); do
+            printf "        %-*s  %s\n" "$max_scan_pool" "${zfs_scan_pools[i]}" "${zfs_scans[i]}"
+        done
+    fi
     if (( ${#zfs_vdevs[@]} > 0 )); then
         echo
         echo "        Vdevs and physical disks:"
