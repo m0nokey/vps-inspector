@@ -34,6 +34,10 @@ Quickly check system status, search files, or audit packages — all with one co
   * Disk usage and inode stats for a path (`-r`)
   * Disk/inode usage warnings (>90%)
   * Summarize largest log files
+  * Filesystem health for detected filesystems (mount mode, usage, inode pressure, XFS kernel errors)
+  * Conditional LVM and ZFS health metrics (thin-pool usage, pool state, scrub, read/write/checksum errors)
+  * Conditional SMART/NVMe health metrics (full model, temperature history, power cycles, wear and media errors)
+  * Aligned storage and I/O tables with a single `OK/WARN/CRITICAL` storage verdict
 * System snapshot & audit (`-s`):
   * OS name and version
   * Server type (dedicated, container, VM)

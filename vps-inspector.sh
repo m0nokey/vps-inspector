@@ -658,6 +658,93 @@ device_model() {
     printf '%s\n' "$model"
 }
 
+storage_kv() {
+    printf "        %-24s %s\n" "$1:" "$2"
+}
+
+storage_devices_table() {
+    local row name size type fstype mount vendor model free_space
+    local max_name=4 max_size=4 max_type=4 max_fstype=6 max_mount=11 max_free=10 max_model=5
+    local i
+    local -a names=() sizes=() types=() fstypes=() mounts=() frees=() models=()
+
+    while IFS= read -r row; do
+        name="$(sed -n 's/.*NAME="\([^"]*\)".*/\1/p' <<< "$row")"
+        size="$(sed -n 's/.* SIZE="\([^"]*\)".*/\1/p' <<< "$row")"
+        type="$(sed -n 's/.* TYPE="\([^"]*\)".*/\1/p' <<< "$row")"
+        fstype="$(sed -n 's/.* FSTYPE="\([^"]*\)".*/\1/p' <<< "$row")"
+        mount="$(sed -n 's/.* MOUNTPOINT="\([^"]*\)".*/\1/p' <<< "$row")"
+        vendor="$(sed -n 's/.* VENDOR="\([^"]*\)".*/\1/p' <<< "$row")"
+        model="$(sed -n 's/.* MODEL="\([^"]*\)".*/\1/p' <<< "$row")"
+        [[ -n "$name" ]] || continue
+
+        if [[ "$type" == disk ]]; then
+            if [[ -n "$vendor" && -n "$model" ]]; then
+                model="$vendor $model"
+            elif [[ -z "$model" ]]; then
+                model="$(device_model "$name")"
+            fi
+        fi
+        free_space="-"
+        if [[ -n "$mount" ]] && have df; then
+            free_space="$(df -kP "$mount" 2>/dev/null \
+                | awk 'NR == 2 {gsub("%", "", $5); printf "%.2fG", $4 / 1024 / 1024}')"
+            [[ -n "$free_space" ]] || free_space="-"
+        fi
+
+        size="${size:--}"; type="${type:--}"; fstype="${fstype:--}"
+        mount="${mount:--}"; model="${model:--}"
+        names+=("$name"); sizes+=("$size"); types+=("$type")
+        fstypes+=("$fstype"); mounts+=("$mount"); frees+=("$free_space"); models+=("$model")
+        ((${#name} > max_name)) && max_name=${#name}
+        ((${#size} > max_size)) && max_size=${#size}
+        ((${#type} > max_type)) && max_type=${#type}
+        ((${#fstype} > max_fstype)) && max_fstype=${#fstype}
+        ((${#mount} > max_mount)) && max_mount=${#mount}
+        ((${#free_space} > max_free)) && max_free=${#free_space}
+        ((${#model} > max_model)) && max_model=${#model}
+    done < <(lsblk -P -o NAME,SIZE,TYPE,FSTYPE,MOUNTPOINT,VENDOR,MODEL 2>/dev/null)
+
+    printf "        %-*s  %-*s  %-*s  %-*s  %-*s  %-*s  %s\n" \
+        "$max_name" NAME "$max_size" SIZE "$max_type" TYPE "$max_fstype" FSTYPE \
+        "$max_mount" MOUNTPOINT "$max_free" "FREE SPACE" MODEL
+    for ((i = 0; i < ${#names[@]}; i++)); do
+        printf "        %-*s  %-*s  %-*s  %-*s  %-*s  %-*s  %s\n" \
+            "$max_name" "${names[i]}" "$max_size" "${sizes[i]}" \
+            "$max_type" "${types[i]}" "$max_fstype" "${fstypes[i]}" \
+            "$max_mount" "${mounts[i]}" "$max_free" "${frees[i]}" "${models[i]}"
+    done
+    ((${#names[@]} > 0)) || echo "        none"
+}
+
+disk_io_activity_table() {
+    local disk disk_names="$1" read_ops write_ops io_time_ms last_index
+    local max_device=6 max_read=8 max_write=9 max_io=14 i
+    local -a devices=() reads=() writes=() io_times=()
+
+    while IFS= read -r disk; do
+        [[ -n "$disk" ]] || continue
+        read -r read_ops write_ops io_time_ms < <(disk_activity_delta "$disk")
+        devices+=("/dev/$disk"); reads+=("$read_ops"); writes+=("$write_ops"); io_times+=("$io_time_ms ms")
+        last_index=$(( ${#devices[@]} - 1 ))
+        ((${#devices[last_index]} > max_device)) && max_device=${#devices[last_index]}
+        ((${#read_ops} > max_read)) && max_read=${#read_ops}
+        ((${#write_ops} > max_write)) && max_write=${#write_ops}
+        ((${#io_times[last_index]} > max_io)) && max_io=${#io_times[last_index]}
+    done <<< "$disk_names"
+
+    echo "    I/O activity:"
+    printf "        %-*s  %-*s  %-*s  %-*s\n" \
+        "$max_device" DEVICE "$max_read" "READ OPS" "$max_write" "WRITE OPS" \
+        "$max_io" "I/O TIME DELTA"
+    for ((i = 0; i < ${#devices[@]}; i++)); do
+        printf "        %-*s  %-*s  %-*s  %-*s\n" \
+            "$max_device" "${devices[i]}" "$max_read" "${reads[i]}" \
+            "$max_write" "${writes[i]}" "$max_io" "${io_times[i]}"
+    done
+    ((${#devices[@]} > 0)) || echo "        none"
+}
+
 format_scaled_value() {
     local value="${1:-0}"
     local divisor="$2"
@@ -900,58 +987,22 @@ top_memory_processes() {
 }
 
 storage_snapshot() {
-    local disk_names disk row name size type fstype mount vendor model free_space
-    local read_ops write_ops io_time_ms errs kernel_matches
+    local disk_names disk errs kernel_matches
 
     echo "    Devices and filesystems:"
     if ! have lsblk; then
-        echo "        lsblk not found"
-        return 0
+        echo "        unavailable (lsblk not found)"
+    else
+        storage_devices_table
     fi
-
-    printf "        %-10s %-8s %-6s %-8s %-16s %-14s %s\n" \
-        "NAME" "SIZE" "TYPE" "FSTYPE" "MOUNTPOINT" "FREE SPACE" "MODEL"
-    while IFS= read -r row; do
-        name="$(sed -n 's/.*NAME="\([^"]*\)".*/\1/p' <<< "$row")"
-        size="$(sed -n 's/.*SIZE="\([^"]*\)".*/\1/p' <<< "$row")"
-        type="$(sed -n 's/.*TYPE="\([^"]*\)".*/\1/p' <<< "$row")"
-        fstype="$(sed -n 's/.*FSTYPE="\([^"]*\)".*/\1/p' <<< "$row")"
-        mount="$(sed -n 's/.*MOUNTPOINT="\([^"]*\)".*/\1/p' <<< "$row")"
-        vendor="$(sed -n 's/.*VENDOR="\([^"]*\)".*/\1/p' <<< "$row")"
-        model="$(sed -n 's/.*MODEL="\([^"]*\)".*/\1/p' <<< "$row")"
-        [[ -n "$name" ]] || continue
-        free_space=""
-        if [[ "$type" == "disk" ]]; then
-            if [[ -n "$vendor" && -n "$model" ]]; then
-                model="$vendor $model"
-            elif [[ -z "$model" ]]; then
-                model="$(device_model "$name")"
-            fi
-        fi
-        if [[ -n "$mount" ]] && have df; then
-            free_space="$(df -kP "$mount" 2>/dev/null \
-                | awk 'NR == 2 {gsub("%", "", $5); printf "%.2fG", $4 / 1024 / 1024}')"
-        fi
-        printf "        %-10s %-8s %-6s %-8s %-16s %-14s %s\n" \
-            "$name" "$size" "$type" "$fstype" "$mount" \
-            "$free_space" "$model"
-    done < <(lsblk -P -o NAME,SIZE,TYPE,FSTYPE,MOUNTPOINT,VENDOR,MODEL 2>/dev/null)
 
     lvm_metrics
 
+    storage_health_report
+
     disk_names="$(lsblk -d -n -o NAME,TYPE 2>/dev/null \
         | awk '$2 == "disk" {print $1}')"
-    while IFS= read -r disk; do
-        [[ -n "$disk" ]] || continue
-        echo
-        echo "    I/O activity:"
-        echo "        Device: /dev/$disk"
-        read -r read_ops write_ops io_time_ms < <(disk_activity_delta "$disk")
-        printf "        Read operations:  %s\n" "$read_ops"
-        printf "        Write operations: %s\n" "$write_ops"
-        printf "        I/O time delta:   %s ms\n" "$io_time_ms"
-
-    done <<< "$disk_names"
+    disk_io_activity_table "$disk_names"
 
     echo
     echo "    Kernel messages:"
@@ -999,7 +1050,7 @@ storage_snapshot() {
 }
 
 disk_metrics() {
-    local disk disk_names size mount model avail used read_ops write_ops io_time_ms errs
+    local disk disk_names size mount model avail used errs
     local -a df_warn=()
     local -a ino_warn=()
 
@@ -1036,18 +1087,15 @@ disk_metrics() {
             fi
 
             echo
-            echo "    I/O activity:"
-            read -r read_ops write_ops io_time_ms < <(disk_activity_delta "$disk")
-            field "Read ops" "$read_ops"
-            field "Write ops" "$write_ops"
-            field "I/O time delta" "${io_time_ms} ms"
-
-            echo
             echo "    Kernel messages:"
             errs="$(disk_kernel_error_matches "$disk")"
             field "Kernel log matches" "$errs"
             echo
         done <<< "$disk_names"
+    fi
+
+    if [[ -n "$disk_names" ]]; then
+        disk_io_activity_table "$disk_names"
     fi
 
     echo
@@ -1067,6 +1115,8 @@ disk_metrics() {
     fi
 
     lvm_metrics
+
+    storage_health_report
 
     echo
     echo "    Disk usage warnings (>90%):"
@@ -1193,12 +1243,13 @@ lvm_metrics() {
 
     if have lvs; then
         echo "        LVM volume groups:"
+        printf "          %-32s %-20s %s\n" "LOGICAL VOLUME" "VG" "SIZE"
         while IFS='|' read -r lv_path vg_name lv_size; do
             lv_path="$(xargs <<< "$lv_path")"
             vg_name="$(xargs <<< "$vg_name")"
             lv_size="$(xargs <<< "$lv_size")"
             [[ -n "$lv_path" ]] || continue
-            printf "          %-32s VG=%-20s SIZE=%s\n" \
+            printf "          %-32s %-20s %s\n" \
                 "$lv_path" "$vg_name" "$lv_size"
         done < <(
             lvs --noheadings --separator '|' --options lv_path,vg_name,lv_size \
@@ -1207,6 +1258,488 @@ lvm_metrics() {
     else
         field "LVM tools" "not installed; lsblk detected logical volumes"
     fi
+}
+
+storage_status_rank() {
+    case "$1" in
+        CRITICAL) echo 3 ;;
+        WARN) echo 2 ;;
+        *) echo 1 ;;
+    esac
+}
+
+storage_raise() {
+    local candidate="$1"
+    local current_rank candidate_rank
+
+    current_rank="$(storage_status_rank "${STORAGE_VERDICT:-OK}")"
+    candidate_rank="$(storage_status_rank "$candidate")"
+    if (( candidate_rank > current_rank )); then
+        STORAGE_VERDICT="$candidate"
+    fi
+}
+
+storage_trim() {
+    sed 's/^[[:space:]]*//; s/[[:space:]]*$//'
+}
+
+storage_numeric_at_least() {
+    local value="$1"
+    local threshold="$2"
+    [[ "$value" =~ ^[0-9]+([.][0-9]+)?$ ]] || return 1
+    awk -v value="$value" -v threshold="$threshold" 'BEGIN { exit !(value >= threshold) }'
+}
+
+filesystem_health_metrics() {
+    local source fstype target options used inode mode status xfs_errors kernel_errors
+    local found=0
+
+    echo "    Filesystem health:"
+    if ! have findmnt; then
+        echo "        unavailable (findmnt not found)"
+        return 0
+    fi
+    printf "        %-32s %-10s %-9s %-8s %-8s %-6s %-14s %s\n" \
+        "TARGET" "FSTYPE" "STATUS" "USED" "INODE" "MODE" "KERNEL ERRORS" "SOURCE"
+
+    while read -r source fstype target options; do
+        [[ -n "$target" && -n "$fstype" ]] || continue
+
+        # Do not turn pseudo-filesystems into storage warnings.
+        case "$fstype" in
+            autofs|cgroup|cgroup2|configfs|debugfs|devpts|devtmpfs|fusectl|hugetlbfs|mqueue|pstore|proc|securityfs|sysfs|tmpfs|tracefs)
+                continue
+                ;;
+        esac
+
+        found=$((found + 1))
+        used="$(df -P "$target" 2>/dev/null | awk 'NR == 2 {gsub("%", "", $5); print $5}')"
+        inode="$(df -Pi "$target" 2>/dev/null | awk 'NR == 2 {gsub("%", "", $5); print $5}')"
+        used="${used:-N/A}"
+        inode="${inode:-N/A}"
+        mode=rw
+        [[ ",$options," == *,ro,* ]] && mode=ro
+        status=OK
+
+        if storage_numeric_at_least "$used" 95 || storage_numeric_at_least "$inode" 95; then
+            status=CRITICAL
+        elif storage_numeric_at_least "$used" 90 || storage_numeric_at_least "$inode" 90; then
+            status=WARN
+        fi
+
+        if [[ "$mode" == ro ]]; then
+            storage_raise CRITICAL
+            status=CRITICAL
+        else
+            storage_raise "$status"
+        fi
+
+        xfs_errors=0
+        kernel_errors="-"
+        if [[ "$fstype" == xfs ]] && dmesg >/dev/null 2>&1; then
+            xfs_errors="$(dmesg 2>/dev/null | grep -iEc 'XFS.*(error|corrupt|shutdown|log)' || true)"
+            [[ "$xfs_errors" =~ ^[0-9]+$ ]] || xfs_errors=0
+            kernel_errors="$xfs_errors"
+            (( xfs_errors > 0 )) && storage_raise WARN
+        fi
+
+        printf "        %-32s %-10s %-9s %-8s %-8s %-6s %-14s %s\n" \
+            "$target" "$fstype" "$status" "${used}%" "${inode}%" "$mode" \
+            "$kernel_errors" "$source"
+    done < <(findmnt -rn -o SOURCE,FSTYPE,TARGET,OPTIONS 2>/dev/null)
+
+    (( found > 0 )) || echo "        none"
+}
+
+lvm_health_metrics() {
+    local pv_name pv_attr pv_size pv_free
+    local vg_name vg_attr vg_size vg_free
+    local lv_path lv_attr lv_size pool_lv data_percent metadata_percent
+    local found=0 status
+
+    if ! have pvs && ! have vgs && ! have lvs; then
+        echo "    LVM health: none"
+        return 0
+    fi
+    echo "    LVM health:"
+
+    if have pvs; then
+        printf "        %-26s %-10s %-12s %-12s %-8s\n" "PV" "ATTR" "SIZE" "FREE" "STATUS"
+        while IFS='|' read -r pv_name pv_attr pv_size pv_free; do
+            pv_name="$(printf '%s' "$pv_name" | storage_trim)"
+            pv_attr="$(printf '%s' "$pv_attr" | storage_trim)"
+            pv_size="$(printf '%s' "$pv_size" | storage_trim)"
+            pv_free="$(printf '%s' "$pv_free" | storage_trim)"
+            [[ -n "$pv_name" ]] || continue
+            found=$((found + 1))
+            status=OK
+            if [[ "$pv_attr" == *m* || "$pv_attr" == *r* ]]; then
+                status=CRITICAL
+                storage_raise CRITICAL
+            fi
+            printf "        %-26s %-10s %-12s %-12s %-8s\n" \
+                "$pv_name" "${pv_attr:-N/A}" "${pv_size:-N/A}" \
+                "${pv_free:-N/A}" "$status"
+        done < <(pvs --noheadings --separator '|' --options pv_name,pv_attr,pv_size,pv_free 2>/dev/null)
+    fi
+
+    if have vgs; then
+        printf "        %-26s %-10s %-12s %-12s %-8s\n" "VG" "ATTR" "SIZE" "FREE" "STATUS"
+        while IFS='|' read -r vg_name vg_attr vg_size vg_free; do
+            vg_name="$(printf '%s' "$vg_name" | storage_trim)"
+            vg_attr="$(printf '%s' "$vg_attr" | storage_trim)"
+            vg_size="$(printf '%s' "$vg_size" | storage_trim)"
+            vg_free="$(printf '%s' "$vg_free" | storage_trim)"
+            [[ -n "$vg_name" ]] || continue
+            found=$((found + 1))
+            status=OK
+            if [[ "$vg_attr" == *p* ]]; then
+                status=CRITICAL
+                storage_raise CRITICAL
+            fi
+            printf "        %-26s %-10s %-12s %-12s %-8s\n" \
+                "$vg_name" "${vg_attr:-N/A}" "${vg_size:-N/A}" \
+                "${vg_free:-N/A}" "$status"
+        done < <(vgs --noheadings --separator '|' --options vg_name,vg_attr,vg_size,vg_free 2>/dev/null)
+    fi
+
+    if have lvs; then
+        printf "        %-30s %-10s %-12s %-18s %-12s %-12s %-8s\n" \
+            "LV" "ATTR" "SIZE" "POOL" "DATA" "META" "STATUS"
+        while IFS='|' read -r lv_path lv_attr lv_size pool_lv data_percent metadata_percent; do
+            lv_path="$(printf '%s' "$lv_path" | storage_trim)"
+            lv_attr="$(printf '%s' "$lv_attr" | storage_trim)"
+            lv_size="$(printf '%s' "$lv_size" | storage_trim)"
+            pool_lv="$(printf '%s' "$pool_lv" | storage_trim)"
+            data_percent="$(printf '%s' "$data_percent" | storage_trim)"
+            metadata_percent="$(printf '%s' "$metadata_percent" | storage_trim)"
+            [[ -n "$lv_path" ]] || continue
+            found=$((found + 1))
+            status=OK
+
+            if [[ "$lv_attr" == *p* ]]; then
+                status=CRITICAL
+                storage_raise CRITICAL
+            fi
+            if storage_numeric_at_least "$data_percent" 98 || \
+               storage_numeric_at_least "$metadata_percent" 98; then
+                status=CRITICAL
+                storage_raise CRITICAL
+            elif storage_numeric_at_least "$data_percent" 90 || \
+                 storage_numeric_at_least "$metadata_percent" 90; then
+                [[ "$status" == OK ]] && status=WARN
+                storage_raise WARN
+            fi
+
+            printf "        %-30s %-10s %-12s %-18s %-12s %-12s %-8s\n" \
+                "$lv_path" "${lv_attr:-N/A}" "${lv_size:-N/A}" \
+                "${pool_lv:--}" "${data_percent:--}" "${metadata_percent:--}" "$status"
+        done < <(lvs --noheadings --separator '|' --options lv_path,lv_attr,lv_size,pool_lv,data_percent,metadata_percent 2>/dev/null)
+    fi
+
+    (( found > 0 )) || echo "    LVM health: none"
+}
+
+zfs_health_metrics() {
+    local pool state capacity fragmentation zread zwrite zcksum scan status found=0
+
+    if ! have zpool; then
+        echo "    ZFS health: none"
+        return 0
+    fi
+    echo "    ZFS health:"
+    printf "        %-24s %-12s %-12s %-14s %-10s %-10s %-10s %-8s\n" \
+        "POOL" "STATE" "CAPACITY" "FRAGMENTATION" "READ" "WRITE" "CHECKSUM" "STATUS"
+
+    while IFS='|' read -r pool state capacity fragmentation; do
+        pool="$(printf '%s' "$pool" | storage_trim)"
+        state="$(printf '%s' "$state" | storage_trim)"
+        capacity="$(printf '%s' "$capacity" | storage_trim)"
+        fragmentation="$(printf '%s' "$fragmentation" | storage_trim)"
+        [[ -n "$pool" ]] || continue
+        found=$((found + 1))
+        status=OK
+
+        case "$state" in
+            ONLINE) ;;
+            DEGRADED) status=WARN; storage_raise WARN ;;
+            FAULTED|UNAVAIL|OFFLINE|REMOVED) status=CRITICAL; storage_raise CRITICAL ;;
+            *) status=WARN; storage_raise WARN ;;
+        esac
+
+        if storage_numeric_at_least "${capacity%%%}" 95; then
+            status=CRITICAL
+            storage_raise CRITICAL
+        elif storage_numeric_at_least "${capacity%%%}" 90; then
+            [[ "$status" == OK ]] && status=WARN
+            storage_raise WARN
+        fi
+        if storage_numeric_at_least "${fragmentation%%%}" 80; then
+            [[ "$status" == OK ]] && status=WARN
+            storage_raise WARN
+        fi
+
+        read -r zread zwrite zcksum < <(
+            zpool status -Hp -P "$pool" 2>/dev/null \
+                | awk -v wanted="$pool" '$1 == wanted && $2 ~ /^(ONLINE|DEGRADED|FAULTED|UNAVAIL|OFFLINE|REMOVED)$/ {print $3, $4, $5; exit}'
+        )
+        zread="${zread:-0}"; zwrite="${zwrite:-0}"; zcksum="${zcksum:-0}"
+        if [[ "$zread" != 0 || "$zwrite" != 0 || "$zcksum" != 0 ]]; then
+            status=WARN
+            storage_raise WARN
+        fi
+
+        scan="$(zpool status "$pool" 2>/dev/null | sed -n 's/^[[:space:]]*scan: //p' | head -n 1)"
+        printf "        %-24s %-12s %-12s %-14s %-10s %-10s %-10s %-8s\n" \
+            "$pool" "$state" "${capacity:-N/A}" "${fragmentation:-N/A}" \
+            "$zread" "$zwrite" "$zcksum" "$status"
+        [[ -n "$scan" ]] && storage_kv "scrub" "$scan"
+    done < <(zpool list -H -p -o name,health,capacity,fragmentation 2>/dev/null | sed 's/[[:space:]][[:space:]]*/|/g')
+
+    (( found > 0 )) || echo "    ZFS health: none"
+}
+
+smart_field() {
+    local smart_output="$1"
+    local wanted="$2"
+    printf '%s\n' "$smart_output" | awk -F: -v wanted="$wanted" '
+        {
+            key=$1
+            gsub(/^[[:space:]]+|[[:space:]]+$/, "", key)
+            if (key == wanted) {
+                sub(/^[^:]*:[[:space:]]*/, "")
+                gsub(/[[:space:]]+$/, "")
+                print
+                exit
+            }
+        }
+    '
+}
+
+smart_ata_raw() {
+    local smart_output="$1"
+    local attribute_regex="$2"
+    printf '%s\n' "$smart_output" | awk -v attribute_regex="$attribute_regex" '
+        $2 ~ attribute_regex { print $10; exit }
+    '
+}
+
+smart_temperature_number() {
+    printf '%s\n' "$1" | sed -n 's/[^0-9-]*\(-\?[0-9][0-9]*\).*/\1/p'
+}
+
+smart_temperature_pair_max() {
+    printf '%s\n' "$1" | sed -n 's#^[^/]*/[[:space:]]*\(-\?[0-9][0-9]*\).*#\1#p'
+}
+
+smart_health_metrics() {
+    local disk device smart_output smart_sct nvme_info model firmware health temperature hours cycles
+    local temp_cycle temp_lifetime temp_recommended temp_limit temp_over_limit
+    local temp_cycle_max temp_lifetime_max temp_recommended_max temp_limit_max temp_status temp_deviation
+    local reallocated pending uncorrectable crc wear spare media_errors unsafe_shutdowns error_entries
+    local smart_seen=0 smart_available=0 smart_failed=0
+
+    echo "    SMART disk health:"
+    if ! have lsblk; then
+        echo "        unavailable (lsblk not found)"
+        return 0
+    fi
+    if ! have smartctl && ! have nvme; then
+        echo "        unavailable (smartctl/nvme not found)"
+        return 0
+    fi
+
+    while read -r disk; do
+        [[ -n "$disk" ]] || continue
+        device="/dev/$disk"
+        smart_output=""
+        if have smartctl; then
+            smart_output="$(smartctl -a "$device" 2>&1 || true)"
+            if [[ "$disk" != nvme[0-9]*n[0-9]* ]] && \
+               ! grep -q 'Current Temperature:' <<< "$smart_output"; then
+                # SCT temperature data is read-only. Some HDDs expose useful
+                # current, min/max and over-limit counters only through it.
+                smart_sct="$(smartctl -l scttemp "$device" 2>&1 || true)"
+                smart_output="$smart_output
+$smart_sct"
+            fi
+        fi
+
+        # smartctl normally supports NVMe too; use nvme-cli when it does not.
+        if [[ "$disk" == nvme[0-9]*n[0-9]* ]] && \
+           ! grep -qiE 'Model Number:|Critical Warning:|SMART overall-health|SMART Health Status' <<< "$smart_output" && \
+           have nvme; then
+            smart_output="$(nvme smart-log "$device" 2>&1 || true)"
+            if [[ -z "$(smart_field "$smart_output" "Model Number")" ]] && have nvme; then
+                nvme_info="$(nvme id-ctrl "$device" 2>/dev/null || true)"
+                smart_output="$nvme_info
+$smart_output"
+            fi
+        fi
+
+        model="$(smart_field "$smart_output" "Device Model")"
+        [[ -n "$model" ]] || model="$(smart_field "$smart_output" "Model Number")"
+        [[ -n "$model" ]] || model="$(smart_field "$smart_output" "Product")"
+        [[ -n "$model" ]] || model="$(device_model "$disk")"
+        firmware="$(smart_field "$smart_output" "Firmware Version")"
+        [[ -n "$firmware" ]] || firmware="$(smart_field "$smart_output" "Firmware Revision")"
+
+        if [[ -z "$smart_output" ]] || ! grep -qiE 'SMART|SCT Status|Critical Warning|Temperature:|Device Model:|Model Number:|Product:' <<< "$smart_output"; then
+            smart_failed=$((smart_failed + 1))
+            continue
+        fi
+        smart_available=$((smart_available + 1))
+        smart_seen=1
+
+        health="$(printf '%s\n' "$smart_output" | awk -F: '
+            /SMART overall-health self-assessment test result:|SMART Health Status:/ {
+                sub(/^[^:]*:[[:space:]]*/, ""); print; exit
+            }
+        ' | storage_trim)"
+        if [[ -z "$health" ]]; then
+            health="$(smart_field "$smart_output" "Critical Warning")"
+            [[ "$health" == 0 ]] && health=OK
+            [[ "$health" != OK && -n "$health" ]] && health=WARN
+        fi
+        if grep -qiE 'FAILED|CRITICAL|read only|media error' <<< "$health"; then
+            storage_raise CRITICAL
+            health=CRITICAL
+        elif [[ -n "$health" ]] && ! grep -qiE 'PASSED|OK|^0$' <<< "$health"; then
+            storage_raise WARN
+            health=WARN
+        else
+            health=OK
+        fi
+
+        temperature="$(smart_field "$smart_output" "Current Temperature")"
+        [[ -n "$temperature" ]] || temperature="$(smart_field "$smart_output" "Temperature")"
+        [[ -n "$temperature" ]] || temperature="$(smart_ata_raw "$smart_output" 'Temperature_Celsius|Airflow_Temperature_Cel|Temperature_Internal')"
+        temperature="$(smart_temperature_number "$temperature")"
+        temp_cycle="$(smart_field "$smart_output" "Power Cycle Min/Max Temperature")"
+        temp_lifetime="$(smart_field "$smart_output" "Lifetime Min/Max Temperature")"
+        temp_recommended="$(smart_field "$smart_output" "Min/Max recommended Temperature")"
+        temp_limit="$(smart_field "$smart_output" "Min/Max Temperature Limit")"
+        [[ -n "$temp_limit" ]] || temp_limit="$(smart_field "$smart_output" "Specified Max Operating Temperature")"
+        temp_over_limit="$(smart_field "$smart_output" "Under/Over Temperature Limit Count")"
+        temp_cycle_max="$(smart_temperature_pair_max "$temp_cycle")"
+        temp_lifetime_max="$(smart_temperature_pair_max "$temp_lifetime")"
+        temp_recommended_max="$(smart_temperature_pair_max "$temp_recommended")"
+        temp_limit_max="$(smart_temperature_pair_max "$temp_limit")"
+        [[ -n "$temp_limit_max" ]] || temp_limit_max="$(smart_temperature_number "$temp_limit")"
+        temp_status=OK
+        temp_deviation=""
+
+        if [[ "$temperature" =~ ^[0-9]+$ ]]; then
+            if [[ "$temp_recommended_max" =~ ^[0-9]+$ ]]; then
+                temp_deviation=$((temperature - temp_recommended_max))
+                if [[ "$temp_limit_max" =~ ^[0-9]+$ ]] && (( temperature >= temp_limit_max )); then
+                    temp_status=CRITICAL
+                    storage_raise CRITICAL
+                elif (( temperature >= temp_recommended_max )); then
+                    temp_status=WARN
+                    storage_raise WARN
+                fi
+            elif [[ "$disk" == nvme[0-9]*n[0-9]* ]]; then
+                # Fallback only when the device does not report a limit.
+                if (( temperature >= 85 )); then
+                    temp_status=CRITICAL
+                    storage_raise CRITICAL
+                elif (( temperature >= 75 )); then
+                    temp_status=WARN
+                    storage_raise WARN
+                fi
+            else
+                # Conservative HDD fallback; vendor-reported limits take precedence.
+                if (( temperature >= 60 )); then
+                    temp_status=CRITICAL
+                    storage_raise CRITICAL
+                elif (( temperature >= 55 )); then
+                    temp_status=WARN
+                    storage_raise WARN
+                fi
+            fi
+
+            # A previous excursion is useful evidence even when the disk has
+            # cooled down before the snapshot was taken.
+            if [[ "$temp_over_limit" =~ /([1-9][0-9]*)$ ]]; then
+                temp_status=WARN
+                storage_raise WARN
+            elif [[ "$temp_lifetime_max" =~ ^[0-9]+$ && "$temp_recommended_max" =~ ^[0-9]+$ ]] && \
+                 (( temp_lifetime_max >= temp_recommended_max )); then
+                temp_status=WARN
+                storage_raise WARN
+            fi
+        fi
+        hours="$(smart_field "$smart_output" "Power On Hours")"
+        [[ -n "$hours" ]] || hours="$(smart_ata_raw "$smart_output" 'Power_On_Hours')"
+        cycles="$(smart_field "$smart_output" "Power Cycles")"
+        [[ -n "$cycles" ]] || cycles="$(smart_ata_raw "$smart_output" 'Power_Cycle_Count')"
+
+        reallocated="$(smart_ata_raw "$smart_output" 'Reallocated_Sector_Ct')"
+        pending="$(smart_ata_raw "$smart_output" 'Current_Pending_Sector')"
+        uncorrectable="$(smart_ata_raw "$smart_output" 'Offline_Uncorrectable|Uncorrectable')"
+        crc="$(smart_ata_raw "$smart_output" 'UDMA_CRC_Error_Count')"
+        wear="$(smart_field "$smart_output" "Percentage Used")"
+        spare="$(smart_field "$smart_output" "Available Spare")"
+        media_errors="$(smart_field "$smart_output" "Media and Data Integrity Errors")"
+        unsafe_shutdowns="$(smart_field "$smart_output" "Unsafe Shutdowns")"
+        error_entries="$(smart_field "$smart_output" "Error Information Log Entries")"
+
+        if [[ "$pending" =~ ^[1-9][0-9]*$ || "$uncorrectable" =~ ^[1-9][0-9]*$ || "$media_errors" =~ ^[1-9][0-9]*$ ]]; then
+            storage_raise CRITICAL
+            health=CRITICAL
+        elif [[ "$reallocated" =~ ^[1-9][0-9]*$ || "$crc" =~ ^[1-9][0-9]*$ ]]; then
+            [[ "$health" == OK ]] && health=WARN
+            storage_raise WARN
+        fi
+
+        echo
+        storage_kv "disk" "$device"
+        storage_kv "model" "${model:-N/A}"
+        [[ -n "$firmware" ]] && storage_kv "firmware" "$firmware"
+        storage_kv "health" "$health"
+        if [[ -n "$temperature" ]]; then
+            storage_kv "temp" "${temperature}C"
+            storage_kv "temp_status" "$temp_status"
+            [[ -n "$temp_deviation" ]] && storage_kv "temp_delta" "$(printf "%+dC" "$temp_deviation")"
+            [[ -n "$temp_cycle_max" ]] && storage_kv "cycle_max" "${temp_cycle_max}C"
+            [[ -n "$temp_lifetime_max" ]] && storage_kv "lifetime_max" "${temp_lifetime_max}C"
+            [[ -n "$temp_recommended_max" ]] && storage_kv "recommended_max" "${temp_recommended_max}C"
+            [[ -n "$temp_limit_max" ]] && storage_kv "limit" "${temp_limit_max}C"
+            [[ -n "$temp_over_limit" ]] && storage_kv "under_over" "$temp_over_limit"
+        fi
+        [[ -n "$hours" ]] && storage_kv "power_on" "${hours}h"
+        [[ -n "$cycles" ]] && storage_kv "power_cycles" "$cycles"
+        [[ -n "$wear" ]] && storage_kv "wear" "$wear"
+        [[ -n "$spare" ]] && storage_kv "spare" "$spare"
+        [[ -n "$reallocated" ]] && storage_kv "reallocated" "$reallocated"
+        [[ -n "$pending" ]] && storage_kv "pending" "$pending"
+        [[ -n "$uncorrectable" ]] && storage_kv "uncorrectable" "$uncorrectable"
+        [[ -n "$crc" ]] && storage_kv "crc" "$crc"
+        [[ -n "$media_errors" ]] && storage_kv "media_errors" "$media_errors"
+        [[ -n "$unsafe_shutdowns" ]] && storage_kv "unsafe_shutdowns" "$unsafe_shutdowns"
+        [[ -n "$error_entries" ]] && storage_kv "error_log" "$error_entries"
+    done < <(lsblk -d -n -o NAME,TYPE 2>/dev/null | awk '$2 == "disk" {print $1}')
+
+    if (( smart_seen == 0 )); then
+        echo "        unavailable (virtual disk, unsupported device, or insufficient permissions)"
+    elif (( smart_failed > 0 )); then
+        echo "        unavailable disks: $smart_failed"
+    fi
+}
+
+storage_health_report() {
+    STORAGE_VERDICT=OK
+    echo
+    filesystem_health_metrics
+    echo
+    lvm_health_metrics
+    echo
+    zfs_health_metrics
+    echo
+    smart_health_metrics
+    echo
+    echo "    Storage verdict: $STORAGE_VERDICT"
 }
 
 load_metrics() {
