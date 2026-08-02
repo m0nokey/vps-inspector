@@ -1231,7 +1231,7 @@ disk_kernel_error_matches() {
 
 lvm_metrics() {
     local row path type size fstype mount found=0
-    local lv_path vg_name lv_size
+    local lv_path vg_name lv_size lvm_detected=0
 
     echo
     echo "    LVM:"
@@ -1257,7 +1257,18 @@ lvm_metrics() {
     done < <(lsblk -P -o PATH,TYPE,SIZE,FSTYPE,MOUNTPOINT 2>/dev/null)
 
     if (( found == 0 )); then
-        field "LVM status" "not detected"
+        if have pvs && [[ -n "$(pvs --noheadings --options pv_name 2>/dev/null | sed '/^[[:space:]]*$/d')" ]]; then
+            lvm_detected=1
+        elif have vgs && [[ -n "$(vgs --noheadings --options vg_name 2>/dev/null | sed '/^[[:space:]]*$/d')" ]]; then
+            lvm_detected=1
+        elif have lvs && [[ -n "$(lvs --noheadings --options lv_path 2>/dev/null | sed '/^[[:space:]]*$/d')" ]]; then
+            lvm_detected=1
+        fi
+        if (( lvm_detected )); then
+            field "LVM status" "detected (details below)"
+        else
+            field "LVM status" "not detected"
+        fi
         return 0
     fi
     if (( found == 1 )); then
